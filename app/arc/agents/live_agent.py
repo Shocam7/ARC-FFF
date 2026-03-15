@@ -72,6 +72,7 @@ class LiveAgentWorker(QThread):
     event_logged         = pyqtSignal(dict)
     status_changed       = pyqtSignal(str)
     error_occurred       = pyqtSignal(str)
+    audio_chunk          = pyqtSignal(bytes)  # Emitted when agent generates an audio frame
 
     def __init__(
         self,
@@ -473,7 +474,11 @@ class LiveAgentWorker(QThread):
                         b64 = d["data"].replace("-", "+").replace("_", "/")
                         pad = (4 - len(b64) % 4) % 4
                         try:
-                            self._audio.feed(base64.b64decode(b64 + "=" * pad))
+                            pcm_bytes = base64.b64decode(b64 + "=" * pad)
+                            # Emit chunk to WS prior to local feed
+                            self.audio_chunk.emit(pcm_bytes)
+                            
+                            self._audio.feed(pcm_bytes)
                             self._turn_in_progress = True
                             self._last_audio_ts    = time.monotonic()
                             self.agent_speaking.emit(True)

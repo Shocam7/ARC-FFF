@@ -65,6 +65,9 @@ class SessionController(QObject):
     # Mark-specific: emitted when Image Generation completes
     image_ready          = pyqtSignal(str)  # absolute path to generated image
 
+    # WebSocket bridge signals
+    audio_chunk_generated = pyqtSignal(str, bytes)  # agent_id, raw pcm bytes
+
     def __init__(
         self,
         proactivity: bool = False,
@@ -178,6 +181,12 @@ class SessionController(QObject):
         if self._active_id in self._agents:
             self._agents[self._active_id].deliver_image(jpeg_bytes)
 
+    def inject_audio(self, pcm_bytes: bytes):
+        """Web client has sent speech. Route directly to the active agent."""
+        if self._active_id in self._agents:
+            # We bypass the local sounddevice microphone
+            self._agents[self._active_id].deliver_audio(pcm_bytes)
+
     def add_agent_live(self, persona: dict):
         """Dynamically add a new agent while the session is running."""
         # Add to global personas list
@@ -285,6 +294,11 @@ class SessionController(QObject):
             lambda s, _id=aid: self.agent_status.emit(_id, s))
         worker.error_occurred.connect(
             lambda e, _id=aid: self.agent_error.emit(_id, e))
+        
+        # Audio bridging to WS
+        if hasattr(worker, 'audio_chunk'):
+            worker.audio_chunk.connect(
+                lambda pcm, _id=aid: self.audio_chunk_generated.emit(_id, pcm))
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 

@@ -1,9 +1,0 @@
-# Railway Procfile — defines two services:
-#  1. token  — FastAPI token server (HTTP)
-#  2. agent  — LiveKit agent worker (long-running, connects to LiveKit Cloud)
-#
-# Railway will run BOTH in parallel in the same deployment.
-# You can also split them into two separate Railway services if preferred.
-
-token: uvicorn token_server:app --host 0.0.0.0 --port ${PORT:-7890}
-agent: python agent.py start
