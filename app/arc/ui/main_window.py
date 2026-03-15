@@ -26,7 +26,6 @@ from PyQt6.QtGui  import QFont, QColor, QImage
 
 from ..core.config  import P, FONT_UI, FONT_MONO, AGENT_PERSONAS, LIVE_MODEL_GEMINI
 from ..agents.session_controller import SessionController
-from ..web.ws_server import ARCWebSocketServer
 from ..web.livekit_bridge import LiveKitBridge
 
 from .widgets.gemini_tile     import GeminiTile
