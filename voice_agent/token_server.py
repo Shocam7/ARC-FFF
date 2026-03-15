@@ -15,6 +15,7 @@ Deploy on Railway:
   Set env: LIVEKIT_API_KEY, LIVEKIT_API_SECRET, (optionally) ALLOWED_ORIGIN
 """
 
+import datetime
 import os
 import uuid
 
@@ -70,7 +71,7 @@ async def get_token(
             .with_identity(identity)
             .with_name(identity)
             .with_grants(grant)
-            .with_ttl(TOKEN_TTL_SECONDS)
+            .with_ttl(datetime.timedelta(seconds=TOKEN_TTL_SECONDS))
             .to_jwt()
         )
 
