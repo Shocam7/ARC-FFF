@@ -5,7 +5,7 @@ export async function GET(req: NextRequest) {
   const room = req.nextUrl.searchParams.get("room") || "bidi-demo-room";
   const username = req.nextUrl.searchParams.get("username") || `guest-${Math.floor(Math.random() * 10000)}`;
 
-  if (!process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET) {
+  if (!process.env.NEXT_PUBLIC_LIVEKIT_API_KEY || !process.env.NEXT_PUBLIC_LIVEKIT_API_SECRET) {
     return NextResponse.json(
       { error: "Server misconfigured. Missing LiveKit keys." },
       { status: 500 }
@@ -13,8 +13,8 @@ export async function GET(req: NextRequest) {
   }
 
   const at = new AccessToken(
-    process.env.LIVEKIT_API_KEY,
-    process.env.LIVEKIT_API_SECRET,
+    process.env.NEXT_PUBLIC_LIVEKIT_API_KEY,
+    process.env.NEXT_PUBLIC_LIVEKIT_API_SECRET,
     {
       identity: username,
       // Token expires in 2 hours
