@@ -119,9 +119,10 @@ class ARCWebSocketServer:
 
     # ── Client Handling ──────────────────────────────────────────────────────
 
-    async def _handle_client(self, websocket: WebSocketServerProtocol, path: str):
+    async def _handle_client(self, websocket: WebSocketServerProtocol):
         """Handle an individual WebSocket connection."""
         # path is typically something like /ws/guest-abc/session-123
+        path = websocket.request.path
         parts = path.strip("/").split("/")
         user_id = parts[1] if len(parts) > 1 else "unknown-user"
         
