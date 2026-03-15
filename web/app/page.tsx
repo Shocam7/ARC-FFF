@@ -318,7 +318,7 @@ function ChatInput({ connected, input, setInput }: { connected: boolean, input: 
     
     // Publish via LiveKit Data Channel!
     const payload = JSON.stringify({ type: "text", text: trimmed });
-    send(new TextEncoder().encode(payload), { reliable: true });
+    send(new TextEncoder().encode(payload), { reliable: true, topic: "chat" });
     
   }, [connected, send]);
 
@@ -351,7 +351,7 @@ function QuickActions({ connected }: { connected: boolean }) {
   const quickAsk = useCallback((prompt: string) => { 
     if (!connected) return;
     const payload = JSON.stringify({ type: "text", text: prompt });
-    send(new TextEncoder().encode(payload), { reliable: true });
+    send(new TextEncoder().encode(payload), { reliable: true, topic: "chat" });
   }, [send, connected]);
 
   return (
