@@ -41,12 +41,11 @@ from .agent_creator import AgentCreatorDialog
 
 class MainWindow(QMainWindow):
 
-    def __init__(self, ws_server: ARCWebSocketServer | None = None, lk_bridge: LiveKitBridge | None = None):
+    def __init__(self, lk_bridge: LiveKitBridge | None = None):
         super().__init__()
         self.setWindowTitle("ARC — AI Panel Conference")
         self.setMinimumSize(960, 600)
         self._recording   = False
-        self._ws_server   = ws_server
         self._lk_bridge   = lk_bridge
         self._controller: SessionController | None = None
 
@@ -133,6 +132,13 @@ class MainWindow(QMainWindow):
         self._btn_console.toggled.connect(
             lambda checked: self._console.setVisible(checked))
         hl.addWidget(self._btn_console); hl.addSpacing(10)
+
+        # Added LiveKit specific status indicator logic as requested by User
+        self._lk_status_lbl = QLabel("")
+        self._lk_status_lbl.setFont(QFont(FONT_MONO, 8))
+        self._lk_status_lbl.setStyleSheet(f"color:{P['text3']};")
+        hl.addWidget(self._lk_status_lbl)
+        hl.addSpacing(10)
 
         self._dot_lbl = QLabel("●")
         self._dot_lbl.setFont(QFont(FONT_UI, 10))
@@ -303,14 +309,16 @@ class MainWindow(QMainWindow):
 
         self._controller = ctrl
         ctrl.start()
-        
-        # Attach the running WS server to the new session
-        if self._ws_server:
-            self._ws_server.attach(ctrl)
             
         # Attach the LiveKit Bridge to the new session
         if self._lk_bridge:
             self._lk_bridge.attach(ctrl)
+            # Sync connection state to the UI indicator
+            self._lk_bridge.connection_state_changed.connect(
+                self._update_livekit_indicator
+            )
+            # Fetch the current state
+            self._update_livekit_indicator(self._lk_bridge.connection_state)
 
         model   = LIVE_MODEL_GEMINI
         short   = model.split("/")[-1] if "/" in model else model
@@ -345,6 +353,11 @@ class MainWindow(QMainWindow):
             w.setEnabled(False)
 
         QTimer.singleShot(600, self._start_session)
+
+    def _update_livekit_indicator(self, state: str):
+        color = P['green'] if state == 'connected' else P['yellow'] if state == 'connecting' else P['red']
+        self._lk_status_lbl.setText(f"LiveKit: {state.upper()}")
+        self._lk_status_lbl.setStyleSheet(f"color:{color}; font-weight: bold;")
 
     # ══════════════════════════════════════════════════════════════════════════
     # Slots

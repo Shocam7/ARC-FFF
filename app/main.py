@@ -27,20 +27,15 @@ def main():
     app.setApplicationName("ARC")
     app.setOrganizationName("ARC")
 
-    from arc.web.ws_server import ARCWebSocketServer
-    ws_server = ARCWebSocketServer()
-    ws_server.start()
-
     from arc.web.livekit_bridge import LiveKitBridge
     lk_bridge = LiveKitBridge()
     lk_bridge.start_background()
 
     from arc.ui.main_window import MainWindow
-    win = MainWindow(ws_server=ws_server, lk_bridge=lk_bridge)
+    win = MainWindow(lk_bridge=lk_bridge)
     win.show()
     
     code = app.exec()
-    ws_server.stop()
     sys.exit(code)
 
 
