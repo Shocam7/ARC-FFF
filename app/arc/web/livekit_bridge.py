@@ -25,6 +25,7 @@ class LiveKitBridge:
         self._room_name = room_name
         self._participant_identity = participant_identity
         
+        self._frames_received = 0
         self._room = rtc.Room()
         self._audio_source: Optional[rtc.AudioSource] = None
         self._audio_track: Optional[rtc.LocalAudioTrack] = None
@@ -80,6 +81,11 @@ class LiveKitBridge:
                 
                 # The event contains an rtc.AudioFrame
                 frame = event.frame
+                
+                self._frames_received += 1
+                if self._frames_received % 100 == 0:
+                    print(f"[LiveKit] Received 100 frames from browser (Total: {self._frames_received})")
+
                 # Inject audio into the session controller
                 self._controller.inject_audio(bytes(frame.data))
 
