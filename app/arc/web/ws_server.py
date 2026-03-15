@@ -75,41 +75,47 @@ class ARCWebSocketServer:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
 
-        # Start the websockets server
-        start_server = websockets.serve(
-            self._handle_client,
-            "0.0.0.0",
-            WS_PORT,
-            ping_interval=20,
-            ping_timeout=20
-        )
+        async def main():
+            # In websockets v13+, serve() must be called inside a running loop
+            async with websockets.serve(
+                self._handle_client,
+                "0.0.0.0",
+                WS_PORT,
+                ping_interval=20,
+                ping_timeout=20
+            ) as server:
+                logger.info(f"[WS] Listening on ws://0.0.0.0:{WS_PORT}")
+                
+                # Wire initial signals if controller was provided
+                if self._controller:
+                    self._wire_controller_signals()
+                
+                # Wait until the stop event is toggled or loop stopped
+                while not self._stop_event.is_set():
+                    await asyncio.sleep(0.5)
+                
+                logger.info("[WS] Stopping server...")
 
         try:
-            # Run the server until the stop event is set
-            server = self._loop.run_until_complete(start_server)
-            logger.info(f"[WS] Listening on ws://0.0.0.0:{WS_PORT}")
-            
-            # Wire initial signals if controller was provided
-            if self._controller:
-                self._wire_controller_signals()
-            
-            self._loop.run_forever()
+            self._loop.run_until_complete(main())
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
             logger.error(f"[WS] Server error: {e}")
         finally:
-            # Cleanup
-            if 'server' in locals():
-                server.close()
-                self._loop.run_until_complete(server.wait_closed())
-            
             # Close all active client connections
             if self._clients:
-                close_tasks = [client.close() for client in self._clients]
-                self._loop.run_until_complete(asyncio.gather(*close_tasks))
+                # We need to run this in the loop before closing it
+                self._loop.run_until_complete(self._close_all())
             
             self._loop.run_until_complete(self._loop.shutdown_asyncgens())
             self._loop.close()
-            logger.info("[WS] Server shutdown complete")
+            logger.info("[WS] Server thread finished")
+
+    async def _close_all(self):
+        if self._clients:
+            close_tasks = [client.close() for client in self._clients]
+            await asyncio.gather(*close_tasks, return_exceptions=True)
 
     # ── Client Handling ──────────────────────────────────────────────────────
 
