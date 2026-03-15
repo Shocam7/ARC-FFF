@@ -174,10 +174,10 @@ export default function HomePage() {
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <LiveKitRoom
-      serverUrl={process.env.NEXT_PUBLIC_LIVEKIT_URL}
+      serverUrl={process.env.NEXT_PUBLIC_LIVEKIT_URL || "wss://arc-m0wlbys4.livekit.cloud"}
       token={livekitToken || ""}
       connect={!!livekitToken}
-      audio={true}
+      audio={false}
       video={false}
     >
       <RoomAudioRenderer />
