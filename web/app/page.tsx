@@ -3,6 +3,7 @@
 import {
   LiveKitRoom,
   RoomAudioRenderer,
+  TrackToggle,
   useLocalParticipant,
   useRoomContext,
   useTracks,
@@ -209,6 +210,16 @@ export default function HomePage() {
                    <br />
                    {connected && !livekitToken && (
                      <div style={{ color: "orange" }}>Generating LiveKit token... Make sure LIVEKIT_API_KEY is in .env.local</div>
+                   )}
+                   {connected && livekitToken && (
+                     <div style={{ marginTop: "2rem" }}>
+                       <TrackToggle
+                         source={Track.Source.Microphone}
+                         className="primary-button"
+                       >
+                         Microphone
+                       </TrackToggle>
+                     </div>
                    )}
                  </div>
              ) : (
