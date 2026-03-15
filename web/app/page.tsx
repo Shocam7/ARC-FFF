@@ -73,6 +73,7 @@ export default function HomePage() {
   
   // Audio Refs
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const captureCtxRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const playbackTimeRef = useRef<number>(0);
@@ -216,6 +217,10 @@ export default function HomePage() {
           processorRef.current.disconnect();
           processorRef.current = null;
        }
+       if (captureCtxRef.current) {
+          captureCtxRef.current.close().catch(console.error);
+          captureCtxRef.current = null;
+       }
        setMicActive(false);
        return;
     }
@@ -235,11 +240,12 @@ export default function HomePage() {
       }});
       mediaStreamRef.current = stream;
 
-      initAudioContext();
-      if (!audioCtxRef.current) return;
-      const ctx = audioCtxRef.current;
+      // Use a dedicated 16kHz AudioContext for capturing so the browser does native downsampling
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const captureCtx = new AudioCtx({ sampleRate: 16000 });
+      captureCtxRef.current = captureCtx;
 
-      const source = ctx.createMediaStreamSource(stream);
+      const source = captureCtx.createMediaStreamSource(stream);
       // Deprecated but widely supported way to process raw audio fast:
       const processor = ctx.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
@@ -255,7 +261,15 @@ export default function HomePage() {
       };
 
       source.connect(processor);
-      processor.connect(ctx.destination);
+      
+      // We connect the processor to the destination to make it run,
+      // but we do NOT want to hear the microphone playback (echo).
+      // Since we just capture raw frames, connecting a dummy gain node works.
+      const gainNode = captureCtx.createGain();
+      gainNode.gain.value = 0; // Mute the local echo
+      processor.connect(gainNode);
+      gainNode.connect(captureCtx.destination);
+      
       setMicActive(true);
 
     } catch (err) {
