@@ -29,8 +29,12 @@ def main():
     ws_server = ARCWebSocketServer()
     ws_server.start()
 
+    from arc.web.livekit_bridge import LiveKitBridge
+    lk_bridge = LiveKitBridge()
+    lk_bridge.start_background()
+
     from arc.ui.main_window import MainWindow
-    win = MainWindow(ws_server=ws_server)
+    win = MainWindow(ws_server=ws_server, lk_bridge=lk_bridge)
     win.show()
     
     code = app.exec()

@@ -27,6 +27,7 @@ from PyQt6.QtGui  import QFont, QColor, QImage
 from ..core.config  import P, FONT_UI, FONT_MONO, AGENT_PERSONAS, LIVE_MODEL_GEMINI
 from ..agents.session_controller import SessionController
 from ..web.ws_server import ARCWebSocketServer
+from ..web.livekit_bridge import LiveKitBridge
 
 from .widgets.gemini_tile     import GeminiTile
 from .widgets.user_tile       import UserTile
@@ -40,12 +41,13 @@ from .agent_creator import AgentCreatorDialog
 
 class MainWindow(QMainWindow):
 
-    def __init__(self, ws_server: ARCWebSocketServer | None = None):
+    def __init__(self, ws_server: ARCWebSocketServer | None = None, lk_bridge: LiveKitBridge | None = None):
         super().__init__()
         self.setWindowTitle("ARC — AI Panel Conference")
         self.setMinimumSize(960, 600)
         self._recording   = False
         self._ws_server   = ws_server
+        self._lk_bridge   = lk_bridge
         self._controller: SessionController | None = None
 
         # Build UI first (no session yet)
@@ -305,6 +307,10 @@ class MainWindow(QMainWindow):
         # Attach the running WS server to the new session
         if self._ws_server:
             self._ws_server.attach(ctrl)
+            
+        # Attach the LiveKit Bridge to the new session
+        if self._lk_bridge:
+            self._lk_bridge.attach(ctrl)
 
         model   = LIVE_MODEL_GEMINI
         short   = model.split("/")[-1] if "/" in model else model
