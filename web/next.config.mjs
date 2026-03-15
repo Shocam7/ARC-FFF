@@ -1,9 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  experimental: {
-    appDir: true,
-  },
   // ── Voice / LiveKit env vars ───────────────────────────────────────────────
   // Set these in Vercel project settings (Environment Variables):
   //
