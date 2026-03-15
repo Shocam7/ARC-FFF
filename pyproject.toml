@@ -1,0 +1,53 @@
+[project]
+name = "bidi-demo"
+version = "0.1.0"
+description = "ARC – AI Real-time Companion (PyQt6 desktop client)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Google LLC" }
+]
+
+dependencies = [
+    "google-adk>=1.20.0",
+    "python-dotenv>=1.0.0",
+    "PyQt6>=6.6.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+    "opencv-python>=4.8.0",
+    "pyyaml>=6.0",
+    "pyautogui>=0.9.54",
+    "Pillow>=10.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+extend = "../../../pyproject.toml"
+
+[tool.ruff.lint]
+ignore = ["C901", "PLR0915"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["arc"]
+
+[tool.uv]
+dev-dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[project.scripts]
+arc = "arc:main"

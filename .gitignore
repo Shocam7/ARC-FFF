@@ -1,0 +1,31 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Environment variables (secrets)
+.env
+.env.local
+.env.*.local
+
+# Node.js
+node_modules/
+.next/
+out/
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# Agent runtime artifacts
+.agents/
+
+# OS
+.DS_Store
+Thumbs.db
