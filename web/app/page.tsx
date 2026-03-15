@@ -247,7 +247,7 @@ export default function HomePage() {
 
       const source = captureCtx.createMediaStreamSource(stream);
       // Deprecated but widely supported way to process raw audio fast:
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      const processor = captureCtx.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
 
       processor.onaudioprocess = (e) => {
