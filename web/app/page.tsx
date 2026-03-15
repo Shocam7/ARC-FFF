@@ -179,8 +179,8 @@ export default function HomePage() {
       connect={!!livekitToken}
       audio={true}
       video={false}
-      style={{ display: "flex", flexDirection: "column", height: "100vh" }}
     >
+      <RoomAudioRenderer />
       <main className="app-root">
       <section className="card header">
         <div className="header-title">ARC Meeting Room (Guest)</div>
@@ -286,6 +286,9 @@ export default function HomePage() {
         <aside className="sidebar card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ fontSize: "0.95rem", fontWeight: 500 }}>Connection</div>
+            <div style={{ fontSize: "0.75rem", color: livekitToken ? "#4ade80" : "#94a3b8" }}>
+              LiveKit: {livekitToken ? "Active" : "Idle"}
+            </div>
           </div>
 
           <div className="connection-form">

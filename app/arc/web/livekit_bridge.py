@@ -66,21 +66,21 @@ class LiveKitBridge:
 
     async def _handle_track_subscribed(self, track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
         """Called when a user in the room starts putting out an audio track"""
+        print(f"[LiveKit] Track subscribed: {publication.sid} from {participant.identity}")
         logger.info(f"[LiveKit] Track subscribed: {publication.sid} from {participant.identity}")
         
         if track.kind == rtc.TrackKind.KIND_AUDIO:
+            print(f"[LiveKit] Subscribed to AUDIO track from {participant.identity}. Starting stream...")
             audio_stream = rtc.AudioStream(track, sample_rate=16000, num_channels=1)
             
             # Start background task to drain this audio stream and send it to the agent
             async for event in audio_stream:
                 if not self._controller:
                     continue
+                
                 # The event contains an rtc.AudioFrame
                 frame = event.frame
-                # Important: livekit python audio frames are 16-bit signed integer PCM.
-                # Just extract the bytes and inject them for the active agent to hear.
-                
-                # frame.data is a memoryview/bytes-like object of the raw PCM
+                # Inject audio into the session controller
                 self._controller.inject_audio(bytes(frame.data))
 
     async def run(self):
@@ -103,6 +103,8 @@ class LiveKitBridge:
             .with_grants(api.VideoGrants(
                 room_join=True,
                 room=self._room_name,
+                can_publish=True,
+                can_subscribe=True,
             )).to_jwt()
 
         # Connect room events
