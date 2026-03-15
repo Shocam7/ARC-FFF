@@ -81,7 +81,7 @@ export default function HomePage() {
       setConnectionState("connecting");
 
       // Fetch LiveKit Token
-      fetch(`/api/livekit?room=${sessionId}&username=${encodeURIComponent(displayName)}`)
+      fetch(`/api/livekit?room=bidi-demo-room&username=${encodeURIComponent(displayName)}`)
         .then((res) => res.json())
         .then((data) => {
            if (data.token) {

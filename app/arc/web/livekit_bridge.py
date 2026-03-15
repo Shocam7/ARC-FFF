@@ -69,7 +69,7 @@ class LiveKitBridge:
         logger.info(f"[LiveKit] Track subscribed: {publication.sid} from {participant.identity}")
         
         if track.kind == rtc.TrackKind.KIND_AUDIO:
-            audio_stream = rtc.AudioStream(track)
+            audio_stream = rtc.AudioStream(track, sample_rate=16000, num_channels=1)
             
             # Start background task to drain this audio stream and send it to the agent
             async for event in audio_stream:
