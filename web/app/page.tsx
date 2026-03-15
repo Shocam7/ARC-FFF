@@ -68,37 +68,6 @@ export default function HomePage() {
     }
   }, [connectionState]);
 
-  // ── Audio Playback Pipeline ────────────────────────────────────────────────
-  const initAudioContext = () => {
-    if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
-      audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({
-        sampleRate: 24000 // Gemini voice output uses 24kHz
-      });
-      playbackTimeRef.current = audioCtxRef.current.currentTime;
-    }
-  };
-
-  const playAudioChunk = (int16Data: Int16Array) => {
-    if (!audioCtxRef.current) return;
-    const ctx = audioCtxRef.current;
-    
-    // Resume context if browser suspended it
-    if (ctx.state === "suspended") ctx.resume();
-
-    const floats = int16ToFloat32(int16Data);
-    const audioBuffer = ctx.createBuffer(1, floats.length, 24000);
-    audioBuffer.getChannelData(0).set(floats);
-
-    const source = ctx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(ctx.destination);
-
-    // Ensure continuous gapless playback
-    const scheduledTime = Math.max(playbackTimeRef.current, ctx.currentTime);
-    source.start(scheduledTime);
-    playbackTimeRef.current = scheduledTime + audioBuffer.duration;
-  };
-
   // ── Connection Logic ───────────────────────────────────────────────────────
   const connect = useCallback(() => {
     if (wsRef.current || connectionState !== "disconnected") return;
