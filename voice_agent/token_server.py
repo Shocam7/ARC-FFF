@@ -53,26 +53,36 @@ async def get_token(
     identity: str = Query(default="",           description="Participant identity"),
 ):
     """Return a short-lived LiveKit JWT for the requested room."""
-    if not identity:
-        identity = f"guest-{uuid.uuid4().hex[:8]}"
+    try:
+        import traceback
+        if not identity:
+            identity = f"guest-{uuid.uuid4().hex[:8]}"
 
-    grant = VideoGrants(
-        room_join=True,
-        room=room,
-        can_publish=True,
-        can_subscribe=True,
-    )
+        grant = VideoGrants(
+            room_join=True,
+            room=room,
+            can_publish=True,
+            can_subscribe=True,
+        )
 
-    token = (
-        AccessToken(api_key=LIVEKIT_API_KEY, api_secret=LIVEKIT_API_SECRET)
-        .with_identity(identity)
-        .with_name(identity)
-        .with_grants(grant)
-        .with_ttl(TOKEN_TTL_SECONDS)
-        .to_jwt()
-    )
+        token = (
+            AccessToken(api_key=LIVEKIT_API_KEY, api_secret=LIVEKIT_API_SECRET)
+            .with_identity(identity)
+            .with_name(identity)
+            .with_grants(grant)
+            .with_ttl(TOKEN_TTL_SECONDS)
+            .to_jwt()
+        )
 
-    return JSONResponse({"token": token, "identity": identity})
+        return JSONResponse({"token": token, "identity": identity})
+    except Exception as e:
+        return JSONResponse(
+            {
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            },
+            status_code=500
+        )
 
 
 @app.get("/health")
