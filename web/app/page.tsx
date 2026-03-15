@@ -181,6 +181,7 @@ export default function HomePage() {
       video={false}
     >
       <RoomAudioRenderer />
+      <LiveKitStatusMonitor />
       <main className="app-root">
       <section className="card header">
         <div className="header-title">ARC Meeting Room (Guest)</div>
@@ -339,5 +340,54 @@ export default function HomePage() {
       </section>
     </main>
     </LiveKitRoom>
+  );
+}
+
+function LiveKitStatusMonitor() {
+  const room = useRoomContext();
+  const [status, setStatus] = useState("Disconnected");
+  const [participants, setParticipants] = useState(0);
+
+  useEffect(() => {
+    const update = () => {
+      setStatus(room.state);
+      setParticipants(room.remoteParticipants.size + 1);
+    };
+    room.on("connectionStateChanged", update);
+    room.on("participantConnected", update);
+    room.on("participantDisconnected", update);
+    update();
+    return () => {
+      room.off("connectionStateChanged", update);
+      room.off("participantConnected", update);
+      room.off("participantDisconnected", update);
+    };
+  }, [room]);
+
+  if (room.state === "disconnected") return null;
+
+  return (
+    <div style={{
+      position: "fixed",
+      bottom: "1rem",
+      left: "1rem",
+      background: "rgba(0,0,0,0.8)",
+      color: "white",
+      padding: "0.5rem 1rem",
+      borderRadius: "8px",
+      fontSize: "0.8rem",
+      zIndex: 1000,
+      border: "1px solid #333"
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+        <div style={{ 
+          width: "8px", 
+          height: "8px", 
+          borderRadius: "50%", 
+          background: room.state === "connected" ? "#4ade80" : "#fbbf24" 
+        }} />
+        LiveKit: {status} ({participants} present)
+      </div>
+    </div>
   );
 }

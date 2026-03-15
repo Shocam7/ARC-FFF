@@ -13,6 +13,8 @@ import warnings
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore    import Qt
+from dotenv import load_dotenv
+load_dotenv()
 
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
