@@ -62,7 +62,7 @@ function VoiceRoomInner() {
     <div className="voice-room-inner">
       {/* Render agent audio tracks (plays through browser speaker automatically) */}
       {agentTracks.map((track) => (
-        <AudioTrack key={track.publication.trackSid} trackRef={track} />
+        <AudioTrack key={track.publication?.trackSid} trackRef={track} />
       ))}
 
       <div className="voice-status-row">
