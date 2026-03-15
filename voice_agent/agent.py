@@ -18,7 +18,6 @@ Deploy on Railway / Fly.io:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 
@@ -28,14 +27,13 @@ from dotenv import load_dotenv
 load_dotenv()          # loads voice_agent/.env when running locally
 
 from livekit.agents import (
-    AutoSubscribe,
+    Agent,
+    AgentSession,
     JobContext,
+    RoomInputOptions,
     WorkerOptions,
     cli,
-    llm,
 )
-
-from livekit.agents import VoicePipelineAgent, AgentSession
 from livekit.plugins import google, silero
 
 logger = logging.getLogger("arc.voice_agent")
@@ -50,40 +48,42 @@ When you don't know something, say so honestly.
 """
 
 
+# ── Agent definition ──────────────────────────────────────────────────────────
+class ARCAgent(Agent):
+    def __init__(self):
+        super().__init__(
+            instructions=ARC_SYSTEM_PROMPT,
+        )
+
+    async def on_enter(self):
+        """Greet the participant when the agent first joins."""
+        await self.session.say(
+            "Welcome to the ARC meeting room! I'm your AI panel host. "
+            "Feel free to ask me anything.",
+            allow_interruptions=True,
+        )
+
+
 # ── Agent entrypoint ──────────────────────────────────────────────────────────
 async def entrypoint(ctx: JobContext):
     """Called once per LiveKit room job."""
     logger.info("ARC voice agent starting in room: %s", ctx.room.name)
 
-    # Connect to the room, auto-subscribe to all tracks
-    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+    await ctx.connect()
 
-    # Initial greeting (sent as text-to-speech before the guest speaks)
-    initial_ctx = llm.ChatContext().append(
-        role="system",
-        text=ARC_SYSTEM_PROMPT,
-    )
-
-    # Build the pipeline:
-    #  silero VAD  →  Google STT  →  Gemini LLM  →  Google TTS
-    assistant = VoiceAssistant(
+    session = AgentSession(
         vad=silero.VAD.load(),
         stt=google.STT(),
         llm=google.LLM(
             model="gemini-2.0-flash-live-001",   # Gemini Live — native audio model
         ),
         tts=google.TTS(),
-        chat_ctx=initial_ctx,
     )
 
-    assistant.start(ctx.room)
-
-    # Greet the first participant that joins
-    await asyncio.sleep(1)
-    await assistant.say(
-        "Welcome to the ARC meeting room! I'm your AI panel host. "
-        "Feel free to ask me anything.",
-        allow_interruptions=True,
+    await session.start(
+        room=ctx.room,
+        agent=ARCAgent(),
+        room_input_options=RoomInputOptions(),
     )
 
 
