@@ -34,7 +34,8 @@ from livekit.agents import (
     cli,
     llm,
 )
-from livekit.agents.voice_assistant import VoiceAssistant
+
+from livekit.agents import VoicePipelineAgent, AgentSession
 from livekit.plugins import google, silero
 
 logger = logging.getLogger("arc.voice_agent")
