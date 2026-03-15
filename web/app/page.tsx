@@ -62,7 +62,11 @@ function VoiceRoomInner() {
     <div className="voice-room-inner">
       {/* Render agent audio tracks (plays through browser speaker automatically) */}
       {agentTracks.map((track) => (
+<<<<<<< HEAD
         <AudioTrack key={track.publication?.trackSid} trackRef={track} />
+=======
+        <AudioTrack key={track.publication?.trackSid} trackRef={track as any} />
+>>>>>>> 7eaa86d (Fix TypeScript type error in page.tsx and add test_livekit.py)
       ))}
 
       <div className="voice-status-row">
@@ -258,9 +262,9 @@ export default function HomePage() {
 
   const connectionLabel = useMemo(() => {
     switch (connectionState) {
-      case "connected":   return "Connected";
-      case "connecting":  return "Connecting…";
-      default:            return "Disconnected";
+      case "connected": return "Connected";
+      case "connecting": return "Connecting…";
+      default: return "Disconnected";
     }
   }, [connectionState]);
 
