@@ -1,5 +1,12 @@
-"use client";
-
+import {
+  LiveKitRoom,
+  RoomAudioRenderer,
+  useLocalParticipant,
+  useRoomContext,
+  useTracks,
+  AudioTrack
+} from "@livekit/components-react";
+import { Track } from "livekit-client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -26,28 +33,6 @@ function createIds() {
   return { userId, sessionId };
 }
 
-// ── PCM Audio Format Helpers ──────────────────────────────────────────────────
-// Web Audio API wants Float32 [-1.0, 1.0]. 
-// Our Python backend wants/sends Int16 (signed 16-bit) PCM.
-
-function float32ToInt16(float32Array: Float32Array): Int16Array {
-  const int16Array = new Int16Array(float32Array.length);
-  for (let i = 0; i < float32Array.length; i++) {
-    const s = Math.max(-1, Math.min(1, float32Array[i]));
-    int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-  }
-  return int16Array;
-}
-
-function int16ToFloat32(int16Array: Int16Array): Float32Array {
-  const float32Array = new Float32Array(int16Array.length);
-  for (let i = 0; i < int16Array.length; i++) {
-    const s = int16Array[i];
-    float32Array[i] = s < 0 ? s / 0x8000 : s / 0x7FFF;
-  }
-  return float32Array;
-}
-
 // ── Main Page ──────────────────────────────────────────────────────────────────
 export default function HomePage() {
   const [activeTab, setActiveTab] = useState<AppTab>("text");
@@ -64,19 +49,12 @@ export default function HomePage() {
   const [rawEvents, setRawEvents] = useState<string[]>([]);
   const [input, setInput] = useState("");
   const [imageStatus, setImageStatus] = useState<string>("idle");
-  const [micActive, setMicActive] = useState<boolean>(false);
+  const [livekitToken, setLivekitToken] = useState<string | null>(null);
 
   // Refs
   const wsRef = useRef<WebSocket | null>(null);
   const eventsEndRef = useRef<HTMLDivElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
-  
-  // Audio Refs
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const captureCtxRef = useRef<AudioContext | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
-  const playbackTimeRef = useRef<number>(0);
 
   const connected = connectionState === "connected";
 
@@ -126,12 +104,19 @@ export default function HomePage() {
       const url = `${backendBase.replace(/\/$/, "")}/${encodeURIComponent(userId)}/${encodeURIComponent(sessionId)}`;
       const ws = new WebSocket(url);
       
-      // We want array buffers for PCM audio
-      ws.binaryType = "arraybuffer";
       wsRef.current = ws;
       
       setConnectionState("connecting");
-      initAudioContext();
+
+      // Fetch LiveKit Token
+      fetch(`/api/livekit?room=${sessionId}&username=${encodeURIComponent(displayName)}`)
+        .then((res) => res.json())
+        .then((data) => {
+           if (data.token) {
+              setLivekitToken(data.token);
+           }
+        })
+        .catch((err) => console.error("Failed to fetch LiveKit token", err));
 
       ws.onopen = () => {
         setConnectionState("connected");
@@ -141,17 +126,10 @@ export default function HomePage() {
         ]);
       };
       
-      ws.onclose = () => { wsRef.current = null; setConnectionState("disconnected"); setMicActive(false); };
-      ws.onerror = () => { wsRef.current = null; setConnectionState("disconnected"); setMicActive(false); };
+      ws.onclose = () => { wsRef.current = null; setConnectionState("disconnected"); setLivekitToken(null); };
+      ws.onerror = () => { wsRef.current = null; setConnectionState("disconnected"); setLivekitToken(null); };
       
       ws.onmessage = (event) => {
-        // Binary audio chunk routing
-        if (event.data instanceof ArrayBuffer) {
-           const pcm16 = new Int16Array(event.data);
-           playAudioChunk(pcm16);
-           return;
-        }
-
         // Text event routing
         try {
           const data: RawEvent = JSON.parse(event.data as string);
@@ -198,95 +176,18 @@ export default function HomePage() {
   const disconnect = useCallback(() => {
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
     setConnectionState("disconnected");
-    setMicActive(false);
+    setLivekitToken(null);
   }, []);
 
   useEffect(() => { return () => { if (wsRef.current) wsRef.current.close(); }; }, []);
   useEffect(() => { if (eventsEndRef.current) eventsEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" }); }, [rawEvents]);
   useEffect(() => { if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" }); }, [messages]);
-
-  // ── Mic Capture Pipeline ───────────────────────────────────────────────────
-  const toggleMic = async () => {
-    if (micActive) {
-       // Turn off mic
-       if (mediaStreamRef.current) {
-          mediaStreamRef.current.getTracks().forEach(t => t.stop());
-          mediaStreamRef.current = null;
-       }
-       if (processorRef.current) {
-          processorRef.current.disconnect();
-          processorRef.current = null;
-       }
-       if (captureCtxRef.current) {
-          captureCtxRef.current.close().catch(console.error);
-          captureCtxRef.current = null;
-       }
-       setMicActive(false);
-       return;
-    }
-
-    // Turn on mic
-    if (!wsRef.current || connectionState !== "connected") {
-       alert("Please connect to the meeting room first!");
-       return;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: {
-         channelCount: 1,
-         sampleRate: 16000,
-         echoCancellation: true,
-         noiseSuppression: true
-      }});
-      mediaStreamRef.current = stream;
-
-      // Use a dedicated 16kHz AudioContext for capturing so the browser does native downsampling
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      const captureCtx = new AudioCtx({ sampleRate: 16000 });
-      captureCtxRef.current = captureCtx;
-
-      const source = captureCtx.createMediaStreamSource(stream);
-      // Deprecated but widely supported way to process raw audio fast:
-      const processor = captureCtx.createScriptProcessor(4096, 1, 1);
-      processorRef.current = processor;
-
-      processor.onaudioprocess = (e) => {
-         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-         
-         const float32Array = e.inputBuffer.getChannelData(0);
-         // Downsample handling isn't strictly necessary here if getUserMedia honored 16kHz,
-         // but a robust app might implement a 48khz -> 16khz resampler here.
-         const int16 = float32ToInt16(float32Array);
-         wsRef.current.send(int16.buffer); // Send binary
-      };
-
-      source.connect(processor);
-      
-      // We connect the processor to the destination to make it run,
-      // but we do NOT want to hear the microphone playback (echo).
-      // Since we just capture raw frames, connecting a dummy gain node works.
-      const gainNode = captureCtx.createGain();
-      gainNode.gain.value = 0; // Mute the local echo
-      processor.connect(gainNode);
-      gainNode.connect(captureCtx.destination);
-      
-      setMicActive(true);
-
-    } catch (err) {
-      console.error("Mic access denied or failed", err);
-      alert("Could not access microphone.");
-      setMicActive(false);
-    }
-  };
-
-  // ── Text Input ─────────────────────────────────────────────────────────────
   const sendText = useCallback((text: string) => {
     const trimmed = text.trim();
     if (!trimmed || !wsRef.current || connectionState !== "connected") return;
     wsRef.current.send(JSON.stringify({ type: "text", text: trimmed }));
     // We rely on the server bouncing back a transcription/text event to show it,
-    // but we can controversially append to local chat optimistic tracking:
-    // setMessages((prev) => [...prev, { id: `user-${Date.now()}-${prev.length}`, from: "user", text: trimmed, ts: Date.now() }]);
+    // but we can controversially append to local chat optimistic tracking.
   }, [connectionState]);
 
   const handleSubmit = useCallback((e: React.FormEvent) => {
@@ -300,7 +201,15 @@ export default function HomePage() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <main className="app-root">
+    <LiveKitRoom
+      serverUrl={process.env.NEXT_PUBLIC_LIVEKIT_URL}
+      token={livekitToken || ""}
+      connect={!!livekitToken}
+      audio={true}
+      video={false}
+      style={{ display: "flex", flexDirection: "column", height: "100vh" }}
+    >
+      <main className="app-root">
       <section className="card header">
         <div className="header-title">ARC Meeting Room (Guest)</div>
         <div className="header-subtitle">
@@ -321,19 +230,16 @@ export default function HomePage() {
         <div className="meeting-room card">
           <div className="meeting-video">
              {activeTab === "voice" ? (
-               <div style={{ textAlign: "center", padding: "4rem 0" }}>
-                 <div style={{ fontSize: "5rem", marginBottom: "1rem" }}>{micActive ? '🗣️' : '🎙️'}</div>
-                 <h2>Direct Voice Link</h2>
-                 <p className="hint-text">Speak naturally. Audio streams via binary WebSocket direct to ARC.</p>
-                 <br />
-                 <button 
-                  className={`primary-button ${micActive ? "danger" : ""}`}
-                  onClick={toggleMic}
-                  disabled={!connected}
-                 >
-                   {micActive ? "🔇 Stop Microphone" : "🎤 Allow Microphone"}
-                 </button>
-               </div>
+                 <div style={{ textAlign: "center", padding: "4rem 0" }}>
+                   <div style={{ fontSize: "5rem", marginBottom: "1rem" }}>🎙️</div>
+                   <h2>LiveKit Voice Active</h2>
+                   <p className="hint-text">Speak naturally. Audio streams directly via LiveKit WebRTC for zero latency.</p>
+                   {livekitToken && <RoomAudioRenderer />}
+                   <br />
+                   {connected && !livekitToken && (
+                     <div style={{ color: "orange" }}>Generating LiveKit token... Make sure LIVEKIT_API_KEY is in .env.local</div>
+                   )}
+                 </div>
              ) : (
                 <>
                   <div className="meeting-video-header">
@@ -447,5 +353,6 @@ export default function HomePage() {
         </aside>
       </section>
     </main>
+    </LiveKitRoom>
   );
 }
