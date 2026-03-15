@@ -212,7 +212,9 @@ export default function HomePage() {
             <ChatInput 
                connected={connected} 
                input={input} 
-               setInput={setInput} 
+               setInput={setInput}
+               setMessages={setMessages}
+               displayName={displayName}
             />
           </div>
         </div>
@@ -308,7 +310,13 @@ function DataChannelHandler({ setMessages, setRawEvents, setImageStatus }: any) 
   return null;
 }
 
-function ChatInput({ connected, input, setInput }: { connected: boolean, input: string, setInput: (v: string) => void }) {
+function ChatInput({ connected, input, setInput, setMessages, displayName }: { 
+  connected: boolean; 
+  input: string; 
+  setInput: (v: string) => void;
+  setMessages: (updater: (prev: ChatMessage[]) => ChatMessage[]) => void;
+  displayName: string;
+}) {
   // We use useDataChannel to GET the send function
   const { send } = useDataChannel("chat");
   
@@ -316,13 +324,19 @@ function ChatInput({ connected, input, setInput }: { connected: boolean, input: 
     const trimmed = text.trim();
     if (!trimmed || !connected) return;
     
+    // Optimistically add the user message to the local conversation
+    setMessages((prev) => [
+      ...prev,
+      { id: `user-${Date.now()}-${prev.length}`, from: "user", text: trimmed, ts: Date.now() },
+    ]);
+
     // Publish via LiveKit Data Channel!
     const payload = JSON.stringify({ type: "text", text: trimmed });
     send(new TextEncoder().encode(payload), { reliable: true, topic: "chat" });
     
-  }, [connected, send]);
+  }, [connected, send, setMessages]);
 
-  const handleSubmit = useCallback((e: React.FormEvent) => {
+  const handleSubmit = useCallback((e: { preventDefault: () => void }) => {
     e.preventDefault();
     if (!input.trim()) return;
     sendText(input);
