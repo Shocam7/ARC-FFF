@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QBuffer, QIODevice
 from PyQt6.QtGui  import QFont, QColor, QImage
 
+from ..core.config  import P, FONT_UI, FONT_MONO, AGENT_PERSONAS, LIVE_MODEL_GEMINI
 from ..agents.session_controller import SessionController
 from ..web.ws_server import ARCWebSocketServer
 

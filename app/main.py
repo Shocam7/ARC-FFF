@@ -25,10 +25,17 @@ def main():
     app.setApplicationName("ARC")
     app.setOrganizationName("ARC")
 
+    from arc.web.ws_server import ARCWebSocketServer
+    ws_server = ARCWebSocketServer()
+    ws_server.start()
+
     from arc.ui.main_window import MainWindow
-    win = MainWindow()
+    win = MainWindow(ws_server=ws_server)
     win.show()
-    sys.exit(app.exec())
+    
+    code = app.exec()
+    ws_server.stop()
+    sys.exit(code)
 
 
 if __name__ == "__main__":
