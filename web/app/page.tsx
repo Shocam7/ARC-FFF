@@ -332,7 +332,10 @@ function ChatInput({ connected, input, setInput, setMessages, displayName }: {
 
     // Publish via LiveKit Data Channel!
     const payload = JSON.stringify({ type: "text", text: trimmed });
-    send(new TextEncoder().encode(payload), { reliable: true, topic: "chat" });
+    console.log("[Chat] Sending message via LiveKit data channel:", payload);
+    send(new TextEncoder().encode(payload), { reliable: true, topic: "chat" })
+      .then(() => console.log("[Chat] Message sent successfully"))
+      .catch((err: unknown) => console.error("[Chat] Failed to send message via LiveKit:", err));
     
   }, [connected, send, setMessages]);
 

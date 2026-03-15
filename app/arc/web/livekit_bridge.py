@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 class LiveKitBridge(QObject):
     # Signal to update the UI with connection state changes
     connection_state_changed = pyqtSignal(str)
+    # Signal emitted from the background asyncio thread to deliver text to the
+    # SessionController on the Qt main thread (queued cross-thread connection)
+    _text_received = pyqtSignal(str)
 
     def __init__(self, room_name: str = "bidi-demo-room", participant_identity: str = "arc-agent"):
         super().__init__()
@@ -50,6 +53,10 @@ class LiveKitBridge(QObject):
     def attach(self, controller: SessionController):
         self._controller = controller
         logger.info("[LiveKit] Attached to SessionController")
+        
+        # Wire cross-thread text delivery: signal emitted from asyncio thread,
+        # received by controller.send_text on the Qt main thread via queued connection.
+        self._text_received.connect(controller.send_text)
         
         # Audio
         if hasattr(self._controller, "audio_chunk_generated"):
@@ -134,18 +141,35 @@ class LiveKitBridge(QObject):
                     self._controller.inject_audio(bytes(event.frame.data))
 
     async def _handle_data_received(self, dp: rtc.DataPacket):
-        if not self._controller or dp.topic != "chat":
+        # Log EVERY packet before any filtering so we can diagnose drops
+        participant_id = dp.participant.identity if dp.participant else "<server>"
+        logger.info(
+            f"[LiveKit] data_received: topic={dp.topic!r}, "
+            f"len={len(dp.data)}, from={participant_id}"
+        )
+        
+        if not self._controller:
+            logger.warning("[LiveKit] No controller attached – dropping packet")
+            return
+        if dp.topic != "chat":
+            logger.debug(f"[LiveKit] Ignoring packet on topic {dp.topic!r}")
             return
             
         try:
             payload = json.loads(dp.data.decode("utf-8"))
             msg_type = payload.get("type")
+            logger.info(f"[LiveKit] Parsed message type={msg_type!r} payload={payload}")
             if msg_type == "text":
                 text = payload.get("text", "").strip()
                 if text:
-                    self._controller.send_text(text)
+                    logger.info(f"[LiveKit] Forwarding text to controller: {text!r}")
+                    # Emit signal instead of calling directly — this crosses the
+                    # asyncio-thread → Qt-main-thread boundary safely via Qt queued connection.
+                    self._text_received.emit(text)
+                else:
+                    logger.warning("[LiveKit] Received 'text' message with empty text")
         except Exception as e:
-            logger.error(f"[LiveKit] Error decoding data channel msg: {e}")
+            logger.error(f"[LiveKit] Error decoding data channel msg: {e}", exc_info=True)
 
     # ── Main Loop ──────────────────────────────────────────────────────────────
 
@@ -177,7 +201,8 @@ class LiveKitBridge(QObject):
             
         @self._room.on("data_received")
         def on_data_received(dp):
-            asyncio.create_task(self._handle_data_received(dp))
+            if self._loop:
+                self._loop.create_task(self._handle_data_received(dp))
 
         @self._room.on("connection_state_changed")
         def on_connection_state_changed(state):
