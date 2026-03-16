@@ -121,8 +121,9 @@ export default function HomePage() {
           // Use RED (Redundant Encoding) for packet loss recovery
           red: true,
         },
-        // CRITICAL: Configure jitter buffer to prevent stuttering
-        webAudioMix: true,
+        // CRITICAL: Disable webAudioMix. The custom WebAudio time-stretching jitter buffer
+        // causes metallic, bit-crushed, granular artifacts. Use native browser NetEq instead.
+        webAudioMix: false,
         adaptiveStream: false,             // Disable - can cause quality fluctuations
         dynacast: false,                   // Disable - can cause switching artifacts
       }}
@@ -315,73 +316,15 @@ function CustomAudioRenderer() {
         sid: track.sid,
         participant: participant.identity,
       });
-
-      // Attach track to audio element with optimized settings
-      try {
-        const element = track.attach() as HTMLAudioElement;
-        if (!element) return;
-
-        // CRITICAL: Configure audio element for low-latency playback
-        element.autoplay = true;
-        (element as any).playsInline = true;
-
-        // Minimize buffering to reduce latency and stuttering
-        if ('sinkId' in element) {
-          // Use default audio output
-          (element as any).setSinkId('default').catch((err: any) => {
-            console.warn('[Audio] Failed to set sink ID:', err);
-          });
-        }
-
-        // Add to DOM (hidden)
-        element.style.display = 'none';
-        document.body.appendChild(element);
-
-        // Store reference
-        audioElementsRef.current.set(track.sid, element);
-
-        // Monitor playback
-        element.addEventListener('play', () => {
-          console.log('[Audio] Playback started:', track.sid);
-        });
-
-        element.addEventListener('stalled', () => {
-          console.warn('[Audio] Playback stalled:', track.sid);
-          setAudioError('Audio playback stalled - reconnecting...');
-
-          // Try to resume
-          element.play().catch(err => console.error('[Audio] Resume failed:', err));
-        });
-
-        element.addEventListener('waiting', () => {
-          console.warn('[Audio] Waiting for data:', track.sid);
-        });
-
-        // Force play (in case autoplay is blocked)
-        element.play().catch(err => {
-          console.warn('[Audio] Autoplay prevented, user interaction needed:', err);
-        });
-
-        setAudioError(null);
-      } catch (err: any) {
-        console.error('[Audio] Failed to attach track:', err);
-        setAudioError(`Failed to attach audio: ${err.message}`);
-      }
+      // We rely on RoomAudioRenderer to attach and play the track natively.
+      // Manually calling track.attach() here would create a second HTMLAudioElement,
+      // resulting in double playback out of phase (comb filtering / metallic ringing).
+      setAudioError(null);
     };
 
     const handleTrackUnsubscribed = (track: any) => {
       if (track.kind !== Track.Kind.Audio) return;
-
       console.log("[Audio] Track unsubscribed:", track.sid);
-
-      // Clean up audio element
-      const element = audioElementsRef.current.get(track.sid);
-      if (element) {
-        element.pause();
-        element.srcObject = null;
-        element.remove();
-        audioElementsRef.current.delete(track.sid);
-      }
     };
 
     room.on(RoomEvent.TrackSubscribed, handleTrackSubscribed);
@@ -391,14 +334,6 @@ function CustomAudioRenderer() {
     return () => {
       room.off(RoomEvent.TrackSubscribed, handleTrackSubscribed);
       room.off(RoomEvent.TrackUnsubscribed, handleTrackUnsubscribed);
-
-      // Clean up all audio elements
-      audioElementsRef.current.forEach(element => {
-        element.pause();
-        element.srcObject = null;
-        element.remove();
-      });
-      audioElementsRef.current.clear();
     };
   }, [room]);
 
