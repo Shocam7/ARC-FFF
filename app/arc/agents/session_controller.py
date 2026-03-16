@@ -274,6 +274,8 @@ class SessionController(QObject):
         worker.text_received.connect(
             lambda t, p, _id=aid: self.text_received.emit(_id, t, p))
         worker.input_transcription.connect(self.input_transcription)
+        worker.input_transcription.connect(
+            lambda t, f, _id=aid: self._on_input_transcription(t, f, _id))
         worker.output_transcription.connect(
             lambda t, f, _id=aid: self.output_transcription.emit(_id, t, f))
         worker.turn_complete.connect(
@@ -362,6 +364,33 @@ class SessionController(QObject):
 
             if self._recording:
                 self.switch_mic_to(agent_id)
+
+    def _on_input_transcription(self, text: str, finished: bool, agent_id: str):
+        """
+        Voice-to-Routing bridge: called when an agent transcribes human speech.
+        If the speech is finished, we feed it to the orchestrator to see if
+        a different agent was addressed.
+        """
+        if not finished or not text.strip():
+            return
+
+        # Only process speech from the agent currently holding the 'floor'
+        # to avoid crosstalk or duplicate routing triggers.
+        if agent_id != self._active_id:
+            return
+
+        logger.info(f"[SessionController] Voice trigger detected: {text}")
+
+        # ── HITL Check ──
+        for aid, worker in self._agents.items():
+            if worker._bus.get("awaiting_input"):
+                logger.info(f"[SessionController] Feeding voice input to HITL for {aid}")
+                worker._bus.provide_input(text)
+                return
+
+        # ── Orchestrator Routing ──
+        if self._orchestrator:
+            self._orchestrator.route(text)
 
     def _run_a2a_for(self, agent_id: str):
 
