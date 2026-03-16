@@ -76,11 +76,13 @@ class LiveKitBridge(QObject):
         self._shutdown_event: Optional[asyncio.Event] = None
         self._audio_queue: Optional[asyncio.Queue[rtc.AudioFrame]] = None
 
-    def _safe_emit(self, signal: pyqtSignal, *args):
+    def _safe_emit(self, signal_name: str, *args):
         """Emit a signal ONLY if this QObject has not been deleted by C++."""
         try:
             if not sip.isdeleted(self):
-                signal.emit(*args)
+                signal = getattr(self, signal_name, None)
+                if signal:
+                    signal.emit(*args)
         except (RuntimeError, ReferenceError):
             # Still might catch the "wrapped C/C++ object has been deleted"
             # if it's deleted between the check and the emit.
@@ -88,10 +90,13 @@ class LiveKitBridge(QObject):
 
     @property
     def connection_state(self) -> str:
-        if self._room is None:
+        try:
+            if sip.isdeleted(self) or self._room is None:
+                return "disconnected"
+            state_map = {0: "disconnected", 1: "connected", 2: "connecting"}
+            return state_map.get(self._room.connection_state, "disconnected")
+        except (RuntimeError, ReferenceError):
             return "disconnected"
-        state_map = {0: "disconnected", 1: "connected", 2: "connecting"}
-        return state_map.get(self._room.connection_state, "disconnected")
 
     # ── attach / detach ────────────────────────────────────────────────────
 
@@ -283,7 +288,7 @@ class LiveKitBridge(QObject):
             text = payload.get("text", "").strip()
             if text:
                 logger.info("[LiveKit] Forwarding to controller: %r", text)
-                self._safe_emit(self._text_received, text)
+                self._safe_emit("_text_received", text)
             else:
                 logger.warning("[LiveKit] Empty text in 'text' message")
 
@@ -352,11 +357,11 @@ class LiveKitBridge(QObject):
         @self._room.on("connection_state_changed")
         def on_connection_state_changed(state):
             if not sip.isdeleted(self):
-                self._safe_emit(self.connection_state_changed, self.connection_state)
+                self._safe_emit("connection_state_changed", self.connection_state)
 
         try:
             await self._room.connect(url, token)
-            self._safe_emit(self.connection_state_changed, "connected")
+            self._safe_emit("connection_state_changed", "connected")
             logger.info("[LiveKit] Connected to room %r", self._room_name)
 
             # Publish the audio track so web clients can hear agents.
@@ -378,7 +383,7 @@ class LiveKitBridge(QObject):
                 pass
             if self._room:
                 await self._room.disconnect()
-            self._safe_emit(self.connection_state_changed, "disconnected")
+            self._safe_emit("connection_state_changed", "disconnected")
 
     async def _pacer_loop(self):
         """

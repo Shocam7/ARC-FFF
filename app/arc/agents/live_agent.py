@@ -86,12 +86,14 @@ class LiveAgentWorker(QThread):
         persona: dict,
         shared_log: SharedConversationLog,
         startup_delay: float = 0.0,
+        model: str | None = None,
     ):
         super().__init__()
         self.persona          = persona
         self.agent_id: str    = persona["id"]
         self.agent_name: str  = persona["name"]
         self._startup_delay   = startup_delay
+        self._model_override  = model
 
         # Shared mmap log — same object across all workers + orchestrator
         self._log: SharedConversationLog = shared_log
@@ -275,7 +277,7 @@ class LiveAgentWorker(QThread):
 
         # ── Backend selection ─────────────────────────────────────────────────
         os.environ.update(GEMINI_ENV)
-        chosen_model = LIVE_MODEL_GEMINI
+        chosen_model = self._model_override or LIVE_MODEL_GEMINI
         
         # ── Capture the running loop (before tools are defined)
         loop = asyncio.get_running_loop()

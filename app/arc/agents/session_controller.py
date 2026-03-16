@@ -159,6 +159,14 @@ class SessionController(QObject):
 
     def send_text(self, text: str, force_agent_id: str | None = None):
         self.user_message.emit(text)
+        
+        # ── HITL: Check if any agent is awaiting human input ─────────────────
+        for aid, worker in self._agents.items():
+            if worker._bus.get("awaiting_input"):
+                logger.info(f"[SessionController] Providing HITL input to {aid}: {text[:40]}...")
+                worker._bus.provide_input(text)
+                return # Intercepted!
+        
         if self._orchestrator:
             self._orchestrator.route(text, force_agent_id=force_agent_id)
 

@@ -58,6 +58,7 @@ class SessionBus:
 
     def __init__(self):
         self._lock = threading.Lock()
+        self._input_ready = threading.Event()
         self._data: dict = {
             # Computer Use keys
             "cu_last_action":  "",
@@ -67,6 +68,10 @@ class SessionBus:
             # Image Generation keys
             "img_status":  "idle",
             "img_result":  "",
+            # Human Input (HITL)
+            "awaiting_input": False,
+            "input_question": "",
+            "input_value":    None,
         }
 
     # ── Computer Use writers ──────────────────────────────────────────────────
@@ -107,6 +112,34 @@ class SessionBus:
     def get(self, key: str, default=None):
         with self._lock:
             return self._data.get(key, default)
+
+    # ── Human Input (HITL) ──────────────────────────────────────────────────
+
+    def set_awaiting_input(self, question: str):
+        with self._lock:
+            self._data["awaiting_input"] = True
+            self._data["input_question"] = question
+            self._data["input_value"]    = None
+        self._input_ready.clear()
+
+    def provide_input(self, value: str):
+        with self._lock:
+            self._data["input_value"] = value
+        self._input_ready.set()
+
+    def wait_for_input(self, timeout: float | None = None) -> str | None:
+        """Blocks until provide_input is called."""
+        if self._input_ready.wait(timeout):
+            with self._lock:
+                return self._data.get("input_value")
+        return None
+
+    def clear_input(self):
+        with self._lock:
+            self._data["awaiting_input"] = False
+            self._data["input_question"] = ""
+            self._data["input_value"]    = None
+        self._input_ready.clear()
 
     # ── Reset helpers ─────────────────────────────────────────────────────────
 
@@ -154,20 +187,30 @@ class SessionBusWatcher:
 
             current = bus.snapshot()
             msg = self._build_message(current, self._last_snapshot)
-            self._last_snapshot = current
 
             if not msg:
+                self._last_snapshot = current
                 continue
 
+            # Bypass debounce for terminal states (completed/failed) so the agent
+            # narrates the final result immediately without a 5s lag.
+            is_terminal = any(s in msg for s in [
+                "Finished.", "Failed or was cancelled.", 
+                "Image ready:", "Image generation failed.",
+                "Thread stopped"
+            ])
+            
             now = time.monotonic()
-            if (now - self._last_inject_ts) < MIN_INJECT_INTERVAL:
-                # Too soon — skip injection this cycle; next poll may inject
+            if not is_terminal and (now - self._last_inject_ts) < MIN_INJECT_INTERVAL:
+                # Too soon — skip injection this cycle; next poll will try again
+                # because we haven't updated self._last_snapshot yet.
                 logger.debug("[SessionBusWatcher] Debounced (%.1fs since last inject)",
                              now - self._last_inject_ts)
                 continue
 
             self._inject(lrq, msg)
             self._last_inject_ts = now
+            self._last_snapshot = current
 
     def _build_message(self, current: dict, prev: dict) -> str | None:
         """
@@ -188,13 +231,24 @@ class SessionBusWatcher:
             parts.append(f"[Computer Use] {cu_action}{loc}")
 
         elif cu_status == "completed" and prev_cu != "completed":
-            summary = cu_result or "Task finished successfully."
-            parts.append(f"[Computer Use] Completed. {summary}")
+            # Detect if the task was actually finished or just hit a limit
+            res_lower = cu_result.lower()
+            if "incomplete" in res_lower or "timeout" in res_lower or "timed out" in res_lower:
+                parts.append(f"[Computer Use] Thread stopped, but task is incomplete. Details: {cu_result}")
+            else:
+                summary = cu_result or "Task finished successfully."
+                parts.append(f"[Computer Use] Finished. {summary}")
 
         elif cu_status == "failed" and prev_cu != "failed":
             parts.append("[Computer Use] Failed or was cancelled.")
 
-        # ── Image Generation changes ─────────────────────────────────────────
+        # ── HITL / Input Request changes ─────────────────────────────────────
+        awaiting_input = current.get("awaiting_input", False)
+        prev_awaiting = prev.get("awaiting_input", False)
+        input_question = current.get("input_question", "")
+
+        if awaiting_input and not prev_awaiting:
+            parts.append(f"[Input Needed] The computer process is stuck and needs information: {input_question}")
         img_status = current.get("img_status", "idle")
         prev_img   = prev.get("img_status", "idle")
         img_result = current.get("img_result", "")

@@ -39,6 +39,7 @@ class MarkWorker(LiveAgentWorker):
             persona=persona,
             shared_log=shared_log,
             startup_delay=startup_delay,
+            model=MARK_MODEL,
         )
         logger.info("[Mark] Initialized using enhanced LiveAgentWorker base.")
 

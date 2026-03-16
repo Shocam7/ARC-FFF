@@ -37,6 +37,7 @@ from .widgets.controls        import (
     round_btn, text_btn, toggle_btn, styled_checkbox,
 )
 from .agent_creator import AgentCreatorDialog
+from ..subagents.computer_use.status_pill import StatusPill
 
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,9 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._apply_theme()
 
+
+        # Floating status pill for Computer Use
+        self._status_pill = StatusPill()
 
         # Start session
         self._start_session()
@@ -319,6 +323,7 @@ class MainWindow(QMainWindow):
         # Consoles
         ctrl.event_logged.connect(self._console.log)
         ctrl.cu_logged.connect(self._cu_console.log)
+        ctrl.cu_logged.connect(self._on_cu_logged)
         ctrl.img_logged.connect(self._img_console.log)
         # Status / error
         ctrl.agent_status.connect(self._on_agent_status)
@@ -478,6 +483,27 @@ class MainWindow(QMainWindow):
             agent_worker = self._controller._agents.get(agent_id)
             if agent_worker:
                 self._session_lbl.setText(agent_worker.session_id)
+
+    def _on_cu_logged(self, agent_id: str, event: dict):
+        """Update the floating status pill when Computer Use events occur."""
+        status = event.get("status", "running")
+        summary = event.get("summary", "")
+        if summary:
+            # Clean up summary: remove "Action: ", etc if present
+            display_text = summary
+            if status == "awaiting":
+                display_text = "Awaiting user input"
+                self._transcript.add_system(f"💬 Computer Use: {event.get('question', 'Input needed')}")
+            elif display_text.startswith("Action: "):
+                display_text = display_text[len("Action: "):].replace("_", " ").capitalize() + "..."
+            elif display_text.startswith("Result: "):
+                 # Maybe don't show results on the pill unless it's an error
+                 if status == "failed":
+                     display_text = "Error: " + display_text[len("Result: "):]
+                 else:
+                     return # Don't update for successful results to keep pill steady
+
+            self._status_pill.update_status(display_text, status)
 
     def _on_mic_toggled(self, checked: bool):
         self._recording = checked

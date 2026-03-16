@@ -80,25 +80,28 @@ def _llm_route_user(
     last_id: str,
     api_key: str,
     model: str,
-) -> str:
-    "Standard user→agent routing. Returns agent_id (falls back to last_id)."
+) -> tuple[str, bool]:
+    "Standard user→agent routing. Returns (agent_id, is_roundtable)."
     agents_desc = "\n".join(
         f'  id="{p["id"]}"  name="{p["name"]}"  field="{p["field"]}"'
         for p in personas
     )
     prompt = (
-        "Silent conference moderator. Respond ONLY with JSON, no markdown.\n\n"
-        f"Agents:\n{agents_desc}\n\n"
-        f"Last active: {last_id}\n\n"
-        "Rules:\n"
-        "1. PRIORITIZE NAMES: If the user mentions an agent's name (e.g., 'Nova', 'Lex', 'Mark'), YOU MUST route to that agent.\n"
-        "2. TASK CAPABILITY: All agents (Nova, Lex, Mark) can now perform background tasks: Google Search, Computer Use, and Image Generation. "
-        "Do NOT route to Mark just because the user asks for a computer task or an image; route based on who the user is talking to.\n"
-        "3. FIELD MATCH: If no name is mentioned, pick the agent whose field best matches the question.\n"
-        "4. REDIRECT: If redirect ('other one', 'not you'), pick the peer of last_active.\n"
-        f'Output: {{"agent_id":"<id>","reason":"<one sentence>"}}\n\n'
-        f"Last 2 turns:\n{recent_2_turns or '(none)'}\n\n"
-        f"User says: {user_text}"
+        "# Role: Panel Traffic Controller\n\n"
+        "You are a silent moderator for an expert panel discussion. Your goal is to "
+        "ensure every user message is handled by the most qualified agent.\n\n"
+        "## Domain Experts:\n"
+        f"{agents_desc}\n\n"
+        f"## State:\n- Last active agent: {last_id}\n\n"
+        "## Routing Logic:\n"
+        "1. **Direct Address**: If the user names an agent (Nova, Lex, Mark), route to them IMMEDIATELY.\n"
+        "2. **Task Parity**: All agents can use Google Search, Computer Use, and Image Gen. Do NOT route to Mark solely based on these tasks; route based on the topic of discussion.\n"
+        "3. **Expertise Match**: If no name is mentioned, route to the agent whose field best aligns with the query.\n"
+        "4. **User Correction**: If the user says 'not you' or 'other one', route to the peer of the last active agent.\n"
+        "5. **Roundtable Detection**: If the query is a general question, philosophical inquiry, or a request for 'everyone's opinion' / 'what do you all think', mark 'roundtable' as true.\n\n"
+        f"## Input:\n- Last 2 turns: {recent_2_turns or '(none)'}\n- User query: {user_text}\n\n"
+        "## Output (JSON Only):\n"
+        '{"agent_id": "<id>", "roundtable": true|false, "reason": "<logic>"}'
     )
     return _call_llm(prompt, last_id, personas, api_key, model)
 
@@ -130,19 +133,19 @@ def _llm_route_a2a(
         for p in peers
     )
     prompt = (
-        "You are monitoring a live panel conversation.\n\n"
-        f"Speaker: {from_name}\n"
-        f"Possible peers:\n{peers_desc}\n\n"
-        "These are the FINAL words of the speaker's just-completed turn:\n"
+        "# Role: Floor Manager\n\n"
+        "Analyze the closing of an agent's turn to detect a handoff.\n\n"
+        f"Current Speaker: {from_name}\n"
+        "Peer Directory:\n"
+        f"{peers_desc}\n\n"
+        "## Transcript Tail (Last 200 chars):\n"
         f'"""\n{tail}\n"""\n\n'
-        "Did the speaker end their turn by inviting a peer to speak — "
-        "e.g. addressed them by name, asked them a direct question, or "
-        "explicitly yielded the floor? "
-        "A peer name mentioned earlier in the turn but NOT at the end does NOT count. "
-        "Asking the user (not a named peer) a question does NOT count.\n\n"
-        "Respond ONLY with JSON, no markdown:\n"
-        '  If handoff: {"handoff": true, "agent_id": "<peer_id>"}\n'
-        '  If no handoff: {"handoff": false}'
+        "## Decision Criteria:\n"
+        "1. **Floor Yield**: Did the speaker END by asking a peer a direct question? (e.g., 'Lex, what do you think?')\n"
+        "2. **Explicit Invite**: Did they name a peer and yield? (e.g., 'I'll let Nova handle the technical details.')\n"
+        "3. **Exclusion**: Mentions earlier in the turn do NOT count. Questions to the 'User' do NOT count.\n\n"
+        "## Output (JSON Only):\n"
+        '{"handoff": true, "agent_id": "<peer_id>"} OR {"handoff": false}'
     )
     try:
         raw = _raw_llm_call(prompt, api_key, max_tokens=60, model=model)
@@ -165,17 +168,19 @@ def _call_llm(
     personas: list[dict],
     api_key: str,
     model: str,
-) -> str:
+) -> tuple[str, bool]:
     try:
         raw = _raw_llm_call(prompt, api_key, max_tokens=80, model=model)
         dec = _parse_json(raw)
         aid = dec.get("agent_id", fallback_id)
-        return aid if aid in {p["id"] for p in personas} else fallback_id
+        rt  = bool(dec.get("roundtable", False))
+        valid_ids = {p["id"] for p in personas}
+        return (aid if aid in valid_ids else fallback_id), rt
     except _RateLimitError:
-        raise   # let the worker method handle UI notification + sleep
+        raise
     except Exception as exc:
         logger.warning("Orchestrator LLM error: %s", exc)
-        return fallback_id
+        return fallback_id, False
 
 
 class _RateLimitError(Exception):
@@ -227,10 +232,13 @@ def _run_summariser(
     model: str,
 ):
     prompt = (
-        "Summarise the following conversation excerpt into exactly 3–4 concise "
-        "bullet points. Preserve names, key claims, and decisions. "
-        "Output plain text bullets starting with '•', no preamble.\n\n"
-        f"{turns_text}"
+        "# Role: Technical Scribe\n\n"
+        "Distill the following conversation batch into 3-4 professional bullets.\n\n"
+        "## Objectives:\n"
+        "- **Context Retention**: Preserve names, technical decisions, and unresolved tasks.\n"
+        "- **Brevity**: Use punchy, 8th-grade vocabulary. No preamble.\n"
+        "- **Symbolism**: Use '•' for bullets.\n\n"
+        f"## Batch Content:\n{turns_text}"
     )
     try:
         raw     = _raw_llm_call(prompt, api_key, max_tokens=200, model=model)
@@ -296,6 +304,11 @@ class OrchestratorWorker(QThread):
         self._api_key = GEMINI_ENV.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
         self._last_id = personas[0]["id"] if personas else ""
         self.setObjectName("Orchestrator")
+
+        # Roundtable state
+        self._roundtable_sequence: list[str] = []
+        self._roundtable_idx: int = -1
+        self._roundtable_original_query: str = ""
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -401,18 +414,30 @@ class OrchestratorWorker(QThread):
             self._emit(peer, user_text, "redirected", history_snapshot)
             return
 
-        # 4. LLM fallback (last 2 turns, metadata-only)
+        # 4. LLM fallback (routing + roundtable detection)
         recent_2 = self._log.as_text(max_tokens=200, window=2)
         try:
-            agent_id = _llm_route_user(
+            agent_id, is_roundtable = _llm_route_user(
                 user_text, recent_2, self._personas,
                 self._last_id, self._api_key,
                 self._model,
             )
         except _RateLimitError as exc:
             self._emit_rate_limit(exc)
-            agent_id = self._last_id   # fall back to last active agent
-        self._emit(agent_id, user_text, "llm", history_snapshot)
+            agent_id, is_roundtable = self._last_id, False
+
+        if is_roundtable:
+            import random
+            all_ids = [p["id"] for p in self._personas]
+            random.shuffle(all_ids)
+            self._roundtable_sequence = all_ids
+            self._roundtable_idx = 0
+            self._roundtable_original_query = user_text
+            agent_id = self._roundtable_sequence[0]
+            self._emit(agent_id, user_text, "roundtable-start", history_snapshot)
+        else:
+            self._roundtable_idx = -1 # Clear any old state
+            self._emit(agent_id, user_text, "llm", history_snapshot)
 
     # ── Agent → Agent (A2A) handoff routing ───────────────────────────────────
 
@@ -424,6 +449,24 @@ class OrchestratorWorker(QThread):
         if not from_id or from_id not in self._id_to_p:
             return
 
+        # 1. Check if we are in a Roundtable
+        if self._roundtable_idx != -1:
+            self._roundtable_idx += 1
+            if self._roundtable_idx < len(self._roundtable_sequence):
+                next_id = self._roundtable_sequence[self._roundtable_idx]
+                history_snap = self._log.as_text(max_tokens=800, window=40)
+                # For roundtable participants, we use a specialized prompt
+                enriched = self._enrich_roundtable(self._roundtable_original_query, history_snap)
+                self.route_to.emit(next_id, enriched)
+                self._last_id = next_id
+                name = self._id_to_p[next_id]["name"]
+                self.routing_note.emit(f"→ {name}  [roundtable-seq]")
+            else:
+                self._roundtable_idx = -1 # Roundtable completed
+                self.routing_note.emit("Roundtable concluded.")
+            return
+
+        # 2. Otherwise, standard A2A probe
         try:
             peer_id = _llm_route_a2a(
                 agent_transcript, from_id, self._personas,
@@ -431,7 +474,7 @@ class OrchestratorWorker(QThread):
             )
         except _RateLimitError as exc:
             self._emit_rate_limit(exc)
-            return   # skip handoff this turn; not catastrophic
+            return
 
         if peer_id:
             self._emit_a2a(from_id, peer_id, agent_transcript, "a2a-llm")
@@ -476,13 +519,11 @@ class OrchestratorWorker(QThread):
         if not history:
             return user_text
         return (
-            f"RESPOND DIRECTLY TO THIS MESSAGE (highest priority):\n"
-            f"{user_text}\n\n"
-            f"--- Conversation history for context (do NOT respond to past turns, "
-            f"only use as background) ---\n"
-            f"{history}\n"
-            f"---\n\n"
-            f"Remember: reply to the message at the top of this prompt."
+            "# PRIMARY DIRECTIVE (Respond to this immediately):\n"
+            f"> {user_text}\n\n"
+            "## Background Context (Reference Only):\n"
+            f"{history}\n\n"
+            "--- End of Context ---"
         )
 
     def _enrich_a2a(self, from_id: str, to_id: str) -> str:
@@ -509,17 +550,29 @@ class OrchestratorWorker(QThread):
         )
 
         prompt = (
-            f"RESPOND DIRECTLY TO THIS (highest priority):\n"
-            f"{last_speaker} just said: \"{last_statement}\"\n\n"
+            "# HANDOFF ALERT (Direct Action Required):\n"
+            f"{last_speaker} yields to you with: \"{last_statement}\"\n\n"
+            "## Recent Exchange (For Continuity):\n"
+            f"{history}\n\n"
+            "## Behavioral Rule:\n"
+            "Respond naturally as if you were already part of the flow. "
+            "Do NOT mention the handoff or say 'I'll take it from here'."
         )
-        if history:
-            prompt += (
-                f"--- Recent conversation for context ---\n"
-                f"{history}\n"
-                f"---\n\n"
-            )
-        prompt += "Respond naturally. Do not acknowledge this handoff or mention transitioning."
         return prompt
+
+    def _enrich_roundtable(self, original_query: str, history: str) -> str:
+        """Enrichment for roundtable participants after the first speaker."""
+        return (
+            "# ROUNDTABLE PARTICIPATION (Direct Action Required):\n"
+            f"The user asked: \"{original_query}\"\n\n"
+            "Several colleagues have already shared their thoughts. It is your turn to "
+            "provide your unique perspective while referencing previous points where appropriate.\n\n"
+            "## Background Context:\n"
+            f"{history}\n\n"
+            "## Behavioral Rule:\n"
+            "Keep it concise. Do NOT acknowledge the roundtable structure. "
+            "Just contribute your expertise to the flow."
+        )
 
     # ── Rolling summariser ────────────────────────────────────────────────────
 

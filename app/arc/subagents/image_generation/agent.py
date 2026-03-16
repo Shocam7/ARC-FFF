@@ -58,40 +58,43 @@ async def run_image_generation_background(
 
     Cancelled cleanly when Mark's session ends (via asyncio Task.cancel()).
     """
-    logger.info("[ImageGen] Waiting for trigger…")
+    while True:
+        logger.info("[ImageGen] Waiting for trigger…")
+        bus.reset_img()
 
-    try:
-        await trigger_ev.wait()
-    except asyncio.CancelledError:
-        logger.info("[ImageGen] Cancelled before trigger")
-        return
+        try:
+            await trigger_ev.wait()
+            trigger_ev.clear()
+        except asyncio.CancelledError:
+            logger.info("[ImageGen] Cancelled waiting for trigger")
+            return
 
-    prompt = prompt_ref[0]
-    logger.info("[ImageGen] Triggered with prompt: %s", prompt[:80])
-    bus.write_img_status("generating")
+        prompt = prompt_ref[0]
+        logger.info("[ImageGen] Triggered with prompt: %s", prompt[:80])
+        bus.write_img_status("generating")
 
-    try:
-        if on_event:
-            on_event({"subagent": "image_generation", "status": "running", "summary": f"Generating image: {prompt[:80]}..."})
-        # All blocking I/O runs in a thread so Mark's loop stays free ✓
-        path = await asyncio.to_thread(_blocking_imagen_call, prompt)
-        if on_event:
-            on_event({"subagent": "image_generation", "status": "completed", "summary": f"Image saved to {os.path.basename(path)}", "result": path})
-        bus.write_img_status("completed", result=path)
-        logger.info("[ImageGen] Saved to: %s", path)
+        try:
+            if on_event:
+                on_event({"subagent": "image_generation", "status": "running", "summary": f"Generating image: {prompt[:80]}..."})
+            # All blocking I/O runs in a thread so Mark's loop stays free ✓
+            path = await asyncio.to_thread(_blocking_imagen_call, prompt)
+            if on_event:
+                on_event({"subagent": "image_generation", "status": "completed", "summary": f"Image saved to {os.path.basename(path)}", "result": path})
+            bus.write_img_status("completed", result=path)
+            logger.info("[ImageGen] Saved to: %s", path)
 
-    except asyncio.CancelledError:
-        if on_event:
-            on_event({"subagent": "image_generation", "status": "failed", "summary": "Image generation cancelled"})
-        bus.write_img_status("failed")
-        logger.info("[ImageGen] Cancelled during generation")
-        raise  # re-raise for asyncio task lifecycle
+        except asyncio.CancelledError:
+            if on_event:
+                on_event({"subagent": "image_generation", "status": "failed", "summary": "Image generation cancelled"})
+            bus.write_img_status("failed")
+            logger.info("[ImageGen] Cancelled during generation")
+            raise  # re-raise for asyncio task lifecycle
 
-    except Exception as exc:
-        if on_event:
-            on_event({"subagent": "image_generation", "status": "failed", "summary": f"Error: {exc}"})
-        bus.write_img_status("failed")
-        logger.error("[ImageGen] Failed: %s", exc)
+        except Exception as exc:
+            if on_event:
+                on_event({"subagent": "image_generation", "status": "failed", "summary": f"Error: {exc}"})
+            bus.write_img_status("failed")
+            logger.error("[ImageGen] Failed: %s", exc)
 
 
 # ── Blocking worker (runs in asyncio.to_thread) ────────────────────────────
@@ -111,6 +114,12 @@ def _blocking_imagen_call(prompt: str) -> str:
         model=IMAGE_MODEL,
         contents=prompt,
         config=gtypes.GenerateContentConfig(
+            system_instruction=(
+                "# Persona: Visual Imagineer\n\n"
+                "You are a master digital artist. Translate user descriptions into "
+                "breathtaking visual assets with professional composition, realistic "
+                "lighting, and high-fidelity detail."
+            ),
             response_modalities=["TEXT", "IMAGE"],
         ),
     )

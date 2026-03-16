@@ -98,6 +98,10 @@ def _summarise_action(tool_name: str, tool_args: dict) -> str:
         app = tool_args.get("application") or tool_args.get("app") or tool_args.get("name", "")
         return f"Opening {app}" if app else "Opening application"
 
+    if name in {"wait", "wait_for_page_load"}:
+        amount = tool_args.get("seconds") or tool_args.get("amount") or 5
+        return f"Waiting for {amount} seconds…"
+
     # Generic fallback
     summary = tool_args.get("description") or tool_args.get("value") or name
     return str(summary)[:80] if summary else name

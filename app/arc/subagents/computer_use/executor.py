@@ -20,6 +20,8 @@ import webbrowser
 from typing import Any
 from urllib.parse import quote as _quote
 
+from .memory import memorize, recall, list_memory
+
 import pyautogui
 
 # Reduce pyautogui speed and add failsafe (move mouse to corner to abort)
@@ -171,6 +173,17 @@ def execute_action(tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
             pyautogui.scroll(dy)
             return {"status": "success", "output": f"Scrolled {dy}"}
 
+        # ── Wait ──
+        if name in {"wait", "wait_for_page_load"}:
+            import time
+            seconds = tool_args.get("seconds") or tool_args.get("amount") or 5
+            try:
+                seconds = float(seconds)
+            except (ValueError, TypeError):
+                seconds = 5
+            time.sleep(seconds)
+            return {"status": "success", "output": f"Waited for {seconds} seconds"}
+
         # ── Screenshot (no-op here; caller takes screenshot after every action) ──
         if name == "screenshot":
             return {"status": "success", "output": "Screenshot captured"}
@@ -262,6 +275,27 @@ def execute_action(tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
             else:
                 subprocess.Popen(["xdg-open", app], start_new_session=True)
             return {"status": "success", "output": f"Launched {app}"}
+
+        # ── Memory Tools ──
+        if name == "memorize":
+            key = tool_args.get("key")
+            value = tool_args.get("value")
+            if not key or not value:
+                return {"status": "error", "error": "memorize requires 'key' and 'value'"}
+            success = memorize(key, value)
+            if success:
+                return {"status": "success", "output": f"Memorized: {key}"}
+            return {"status": "error", "error": "Failed to write to memory"}
+
+        if name == "recall":
+            key = tool_args.get("key")
+            if not key:
+                memory_list = list_memory()
+                return {"status": "success", "output": f"Available memory keys: {list(memory_list.keys())}", "memory": memory_list}
+            val = recall(key)
+            if val:
+                return {"status": "success", "output": f"Recalled {key}: {val}", "value": val}
+            return {"status": "error", "error": f"Key '{key}' not found in memory"}
 
         # Unknown action — do not fail, report so model can adapt
         logger.warning("[ComputerUse] Unknown tool: %s with args %s", tool_name, tool_args)
