@@ -105,9 +105,9 @@ export default function HomePage() {
       options={{
         // CRITICAL: Aggressive audio processing causes metallic/robotic sound
         audioCaptureDefaults: {
-          echoCancellation: false,        // Disable - can cause metallic artifacts
-          noiseSuppression: false,        // Disable - can cause robotic sound
-          autoGainControl: false,         // Disable - can cause volume pumping
+          echoCancellation: true,         // Enabled to prevent feedback loops
+          noiseSuppression: true,         // Enabled to prevent background noise
+          autoGainControl: true,          // Enabled to consistent volume
           // Explicit sample rate to avoid resampling
           sampleRate: 48000,              // 48kHz - standard for WebRTC
           channelCount: 1,                // Mono for voice
