@@ -322,7 +322,7 @@ function CustomAudioRenderer() {
 
         // CRITICAL: Configure audio element for low-latency playback
         element.autoplay = true;
-        element.playsInline = true;
+        (element as any).playsInline = true;
 
         // Minimize buffering to reduce latency and stuttering
         if ('sinkId' in element) {
