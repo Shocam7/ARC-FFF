@@ -64,6 +64,7 @@ class SessionController(QObject):
     routing_note         = pyqtSignal(str)
     # Mark-specific: emitted when Image Generation completes
     image_ready          = pyqtSignal(str)  # absolute path to generated image
+    user_message         = pyqtSignal(str)  # when a user message is injected via text
 
     # WebSocket bridge signals
     audio_chunk_generated = pyqtSignal(str, bytes)  # agent_id, raw pcm bytes
@@ -174,6 +175,7 @@ class SessionController(QObject):
     # ── Public API ────────────────────────────────────────────────────────────
 
     def send_text(self, text: str, force_agent_id: str | None = None):
+        self.user_message.emit(text)
         if self._orchestrator:
             self._orchestrator.route(text, force_agent_id=force_agent_id)
 

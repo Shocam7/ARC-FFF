@@ -28,13 +28,20 @@ def main():
     app.setOrganizationName("ARC")
 
     from arc.web.livekit_bridge import LiveKitBridge
+    from arc.ui.main_window import MainWindow
+
     lk_bridge = LiveKitBridge()
+
+    # MainWindow.__init__ → _start_session() → lk_bridge.attach(ctrl)
+    # The controller is fully wired before the asyncio loop starts.
+    win = MainWindow(lk_bridge=lk_bridge)
+
+    # Start the background loop AFTER the window is constructed so
+    # _controller is never None when the first data packet arrives.
     lk_bridge.start_background()
 
-    from arc.ui.main_window import MainWindow
-    win = MainWindow(lk_bridge=lk_bridge)
     win.show()
-    
+
     code = app.exec()
     sys.exit(code)
 

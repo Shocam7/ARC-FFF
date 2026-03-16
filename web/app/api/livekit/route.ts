@@ -28,7 +28,13 @@ export async function GET(req: NextRequest) {
     canPublish: true,
     canSubscribe: true,
     canPublishData: true,
+    // Explicitly enable audio publishing
+    canPublishSources: ["microphone", "screen_share_audio"],
   });
 
-  return NextResponse.json({ token: await at.toJwt() });
+  const token = await at.toJwt();
+
+  console.log(`[LiveKit] Generated token for user=${username} room=${room}`);
+
+  return NextResponse.json({ token });
 }

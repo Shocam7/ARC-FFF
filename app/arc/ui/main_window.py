@@ -66,6 +66,11 @@ class MainWindow(QMainWindow):
         # Start session
         self._start_session()
 
+    @property
+    def session_controller(self) -> SessionController | None:
+        """Expose the session controller for external components (e.g. LiveKit bridge)."""
+        return self._controller
+
     # ══════════════════════════════════════════════════════════════════════════
     # UI construction
     # ══════════════════════════════════════════════════════════════════════════
@@ -305,6 +310,7 @@ class MainWindow(QMainWindow):
         ctrl.routing_note.connect(self._on_routing_note)
         ctrl.active_agent_changed.connect(self._on_active_changed)
         ctrl.image_ready.connect(self._on_image_ready)
+        ctrl.user_message.connect(self._on_user_message_received)
 
         self._controller = ctrl
         ctrl.start()
@@ -441,11 +447,14 @@ class MainWindow(QMainWindow):
                 self._controller.stop_recording()
             self._transcript.add_system("Microphone muted")
 
+    def _on_user_message_received(self, text: str):
+        self._transcript.add_system(f"You: {text}")
+
     def _send_text(self):
         text = self._input.text().strip()
         if not text or not self._controller:
             return
-        self._transcript.add_system(f"You: {text}")
+        # Transcript updated via user_message signal from controller
         self._controller.send_text(text)
         self._input.clear()
 
@@ -587,4 +596,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e):
         if self._controller:
             self._controller.stop()
+        if self._lk_bridge:
+            self._lk_bridge.stop()
         e.accept()
