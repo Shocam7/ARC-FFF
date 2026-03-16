@@ -317,7 +317,8 @@ function CustomAudioRenderer() {
       });
 
       // Attach track to audio element with optimized settings
-      track.attach().then((element: HTMLAudioElement) => {
+      try {
+        const element = track.attach() as HTMLAudioElement;
         if (!element) return;
 
         // CRITICAL: Configure audio element for low-latency playback
@@ -362,10 +363,10 @@ function CustomAudioRenderer() {
         });
 
         setAudioError(null);
-      }).catch((err: any) => {
+      } catch (err: any) {
         console.error('[Audio] Failed to attach track:', err);
         setAudioError(`Failed to attach audio: ${err.message}`);
-      });
+      }
     };
 
     const handleTrackUnsubscribed = (track: any) => {
