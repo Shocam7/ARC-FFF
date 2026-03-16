@@ -122,7 +122,11 @@ export default function HomePage() {
           red: true,
         },
         // CRITICAL: Configure jitter buffer to prevent stuttering
-        expWebAudioMix: false,             // Use native audio rendering (more stable)
+        webAudioMix: {
+          audioContext: {
+            latencyHint: 'interactive',    // Low latency for real-time
+          },
+        },
         adaptiveStream: false,             // Disable - can cause quality fluctuations
         dynacast: false,                   // Disable - can cause switching artifacts
       }}
