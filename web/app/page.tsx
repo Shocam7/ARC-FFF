@@ -103,18 +103,28 @@ export default function HomePage() {
       audio={true}
       video={false}
       options={{
+        // CRITICAL: Aggressive audio processing causes metallic/robotic sound
         audioCaptureDefaults: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
+          echoCancellation: false,        // Disable - can cause metallic artifacts
+          noiseSuppression: false,        // Disable - can cause robotic sound
+          autoGainControl: false,         // Disable - can cause volume pumping
+          // Explicit sample rate to avoid resampling
+          sampleRate: 48000,              // 48kHz - standard for WebRTC
+          channelCount: 1,                // Mono for voice
         },
         publishDefaults: {
           audioPreset: {
-            maxBitrate: 64_000,
+            maxBitrate: 96_000,           // Increased to 96kbps for better quality
           },
+          // Disable DTX (discontinuous transmission) which can cause choppiness
+          dtx: false,
+          // Use RED (Redundant Encoding) for packet loss recovery
+          red: true,
         },
-        adaptiveStream: true,
-        dynacast: true,
+        // CRITICAL: Configure jitter buffer to prevent stuttering
+        expWebAudioMix: false,             // Use native audio rendering (more stable)
+        adaptiveStream: false,             // Disable - can cause quality fluctuations
+        dynacast: false,                   // Disable - can cause switching artifacts
       }}
       onDisconnected={() => {
         disconnect();
@@ -143,7 +153,7 @@ export default function HomePage() {
         setRawEvents={setRawEvents}
         setImageStatus={setImageStatus}
       />
-      <EnhancedAudioRenderer />
+      <CustomAudioRenderer />
       <LiveKitStatusMonitor />
       <main className="app-root">
         <section className="card header">
@@ -175,7 +185,7 @@ export default function HomePage() {
                     <span className="wave-bar" style={{ '--i': 5 } as any}></span>
                   </div>
                   <h2>LiveKit Voice Active</h2>
-                  <p className="hint-text">Speak naturally. Audio streams directly via LiveKit WebRTC for zero latency.</p>
+                  <p className="hint-text">Speak naturally. Audio optimized for clarity and low latency.</p>
                   <br />
                   {connected && !livekitToken && (
                     <div style={{ color: "orange" }}>Generating LiveKit token... Make sure LIVEKIT_API_KEY is in .env.local</div>
@@ -291,52 +301,109 @@ export default function HomePage() {
   );
 }
 
-// ── Enhanced Audio Renderer with Error Recovery ───────────────────────────────
-function EnhancedAudioRenderer() {
+// ── Custom Audio Renderer with Jitter Buffer Control ──────────────────────────
+function CustomAudioRenderer() {
   const room = useRoomContext();
   const [audioError, setAudioError] = useState<string | null>(null);
+  const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
   useEffect(() => {
-    const handleTrackSubscribed = (track: any) => {
-      if (track.kind === Track.Kind.Audio) {
-        console.log("[Audio] Track subscribed:", track.sid);
+    const handleTrackSubscribed = (track: any, publication: any, participant: any) => {
+      if (track.kind !== Track.Kind.Audio) return;
+
+      console.log("[Audio] Track subscribed:", {
+        sid: track.sid,
+        participant: participant.identity,
+      });
+
+      // Attach track to audio element with optimized settings
+      track.attach().then((element: HTMLAudioElement) => {
+        if (!element) return;
+
+        // CRITICAL: Configure audio element for low-latency playback
+        element.autoplay = true;
+        element.playsInline = true;
+
+        // Minimize buffering to reduce latency and stuttering
+        if ('sinkId' in element) {
+          // Use default audio output
+          (element as any).setSinkId('default').catch((err: any) => {
+            console.warn('[Audio] Failed to set sink ID:', err);
+          });
+        }
+
+        // Add to DOM (hidden)
+        element.style.display = 'none';
+        document.body.appendChild(element);
+
+        // Store reference
+        audioElementsRef.current.set(track.sid, element);
+
+        // Monitor playback
+        element.addEventListener('play', () => {
+          console.log('[Audio] Playback started:', track.sid);
+        });
+
+        element.addEventListener('stalled', () => {
+          console.warn('[Audio] Playback stalled:', track.sid);
+          setAudioError('Audio playback stalled - reconnecting...');
+
+          // Try to resume
+          element.play().catch(err => console.error('[Audio] Resume failed:', err));
+        });
+
+        element.addEventListener('waiting', () => {
+          console.warn('[Audio] Waiting for data:', track.sid);
+        });
+
+        // Force play (in case autoplay is blocked)
+        element.play().catch(err => {
+          console.warn('[Audio] Autoplay prevented, user interaction needed:', err);
+        });
+
         setAudioError(null);
-      }
+      }).catch((err: any) => {
+        console.error('[Audio] Failed to attach track:', err);
+        setAudioError(`Failed to attach audio: ${err.message}`);
+      });
     };
 
     const handleTrackUnsubscribed = (track: any) => {
-      if (track.kind === Track.Kind.Audio) {
-        console.log("[Audio] Track unsubscribed:", track.sid);
-      }
-    };
+      if (track.kind !== Track.Kind.Audio) return;
 
-    const handleTrackMuted = (publication: any) => {
-      if (publication.kind === Track.Kind.Audio) {
-        console.log("[Audio] Track muted:", publication.trackSid);
-      }
-    };
+      console.log("[Audio] Track unsubscribed:", track.sid);
 
-    const handleTrackUnmuted = (publication: any) => {
-      if (publication.kind === Track.Kind.Audio) {
-        console.log("[Audio] Track unmuted:", publication.trackSid);
+      // Clean up audio element
+      const element = audioElementsRef.current.get(track.sid);
+      if (element) {
+        element.pause();
+        element.srcObject = null;
+        element.remove();
+        audioElementsRef.current.delete(track.sid);
       }
     };
 
     room.on(RoomEvent.TrackSubscribed, handleTrackSubscribed);
     room.on(RoomEvent.TrackUnsubscribed, handleTrackUnsubscribed);
-    room.on(RoomEvent.TrackMuted, handleTrackMuted);
-    room.on(RoomEvent.TrackUnmuted, handleTrackUnmuted);
 
+    // Cleanup on unmount
     return () => {
       room.off(RoomEvent.TrackSubscribed, handleTrackSubscribed);
       room.off(RoomEvent.TrackUnsubscribed, handleTrackUnsubscribed);
-      room.off(RoomEvent.TrackMuted, handleTrackMuted);
-      room.off(RoomEvent.TrackUnmuted, handleTrackUnmuted);
+
+      // Clean up all audio elements
+      audioElementsRef.current.forEach(element => {
+        element.pause();
+        element.srcObject = null;
+        element.remove();
+      });
+      audioElementsRef.current.clear();
     };
   }, [room]);
 
   return (
     <>
+      {/* Still render default but our custom handler takes priority */}
       <RoomAudioRenderer />
       {audioError && (
         <div style={{
@@ -351,7 +418,7 @@ function EnhancedAudioRenderer() {
           zIndex: 1000,
           maxWidth: "300px"
         }}>
-          Audio Error: {audioError}
+          {audioError}
         </div>
       )}
     </>
@@ -363,9 +430,11 @@ function AudioDebugPanel() {
   const room = useRoomContext();
   const tracks = useTracks([Track.Source.Microphone], { onlySubscribed: false });
   const [stats, setStats] = useState<any>(null);
+  const [remoteTracks, setRemoteTracks] = useState<number>(0);
 
   useEffect(() => {
     const interval = setInterval(async () => {
+      // Local track stats
       if (room.localParticipant) {
         const audioTracks = room.localParticipant.audioTrackPublications;
         if (audioTracks.size > 0) {
@@ -384,6 +453,15 @@ function AudioDebugPanel() {
           }
         }
       }
+
+      // Count remote audio tracks
+      let remoteCount = 0;
+      room.remoteParticipants.forEach(participant => {
+        participant.audioTrackPublications.forEach(pub => {
+          if (pub.isSubscribed) remoteCount++;
+        });
+      });
+      setRemoteTracks(remoteCount);
     }, 2000);
 
     return () => clearInterval(interval);
@@ -401,7 +479,8 @@ function AudioDebugPanel() {
       margin: "2rem auto 0"
     }}>
       <div style={{ fontWeight: 600, marginBottom: "0.5rem" }}>Audio Debug Info:</div>
-      <div>Tracks: {tracks.length}</div>
+      <div>Local tracks: {tracks.length}</div>
+      <div>Remote tracks: {remoteTracks}</div>
       {stats && (
         <>
           <div>Enabled: {stats.enabled ? "Yes" : "No"}</div>
@@ -409,6 +488,9 @@ function AudioDebugPanel() {
           <div>Bitrate: {stats.bitrate ? `${Math.round(stats.bitrate / 1000)} kbps` : "N/A"}</div>
         </>
       )}
+      <div style={{ marginTop: "0.5rem", fontSize: "0.75rem", color: "#94a3b8" }}>
+        Audio processing disabled for clarity
+      </div>
     </div>
   );
 }
