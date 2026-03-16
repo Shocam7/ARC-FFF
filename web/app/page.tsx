@@ -122,7 +122,7 @@ export default function HomePage() {
           red: true,
         },
         // CRITICAL: Configure jitter buffer to prevent stuttering
-        expWebAudioMix: true,
+        webAudioMix: true,
         adaptiveStream: false,             // Disable - can cause quality fluctuations
         dynacast: false,                   // Disable - can cause switching artifacts
       }}
