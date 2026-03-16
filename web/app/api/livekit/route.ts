@@ -28,8 +28,6 @@ export async function GET(req: NextRequest) {
     canPublish: true,
     canSubscribe: true,
     canPublishData: true,
-    // Explicitly enable audio publishing
-    canPublishSources: ["microphone", "screen_share_audio"],
   });
 
   const token = await at.toJwt();
