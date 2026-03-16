@@ -212,8 +212,9 @@ export default function HomePage() {
                   </div>
                   <div>
                     <div className="agents-row">
-                      <span className="agent-pill">Mark (tools: web, computer, images)</span>
-                      <span className="agent-pill">Other agents (handoffs)</span>
+                      <span className="agent-pill highlight">Mark</span>
+                      <span className="agent-pill">Dr. Nova</span>
+                      <span className="agent-pill">Prof. Lex</span>
                     </div>
                     <div className="image-preview">
                       <div>Image generation status: {imageStatus}</div>
@@ -237,7 +238,7 @@ export default function HomePage() {
                 {messages.map((m) => (
                   <div key={m.id} className={`message-row ${m.from === "user" ? "user" : m.from === "agent" ? "agent" : ""}`}>
                     <span className={`message-badge ${m.from === "user" ? "user" : m.from === "agent" ? "agent" : ""}`}>
-                      {m.from === "user" ? displayName : m.from === "agent" ? "Agent" : "System"}
+                      {m.from === "user" ? displayName : m.from === "agent" ? (m as any).agentName || "Agent" : "System"}
                     </span>
                     <div className="message-body">
                       <div>{m.text}</div>
@@ -450,7 +451,23 @@ function DataChannelHandler({ setMessages, setRawEvents, setImageStatus }: any) 
       if (text) {
         const finalFrom = from;
         const finalText = text;
-        setMessages((prev: any) => [...prev, { id: `msg-${Date.now()}-${prev.length}`, from: finalFrom, text: finalText, ts: Date.now() }]);
+        const agentId = data.agent_id as string;
+        
+        let agentName = "Agent";
+        if (agentId === "mark") agentName = "Mark";
+        else if (agentId === "scientist") agentName = "Dr. Nova";
+        else if (agentId === "historian") agentName = "Prof. Lex";
+
+        setMessages((prev: any) => [
+          ...prev,
+          {
+            id: `msg-${Date.now()}-${prev.length}`,
+            from: finalFrom,
+            text: finalText,
+            ts: Date.now(),
+            agentName: agentName,
+          }
+        ]);
       }
 
       setRawEvents((prev: any) => { const next = [...prev, JSON.stringify(data)]; if (next.length > 200) next.shift(); return next; });

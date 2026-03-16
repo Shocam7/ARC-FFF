@@ -106,12 +106,19 @@ class SessionController(QObject):
         personas = AGENT_PERSONAS
 
         for i, p in enumerate(personas):
-            # All agents now use the enhanced LiveAgentWorker
-            worker = LiveAgentWorker(
-                persona=p,
-                shared_log=self._log,
-                startup_delay=i * 1.5,
-            )
+            # Specialized worker for Mark, generic LiveAgentWorker for others
+            if p["id"] == "mark":
+                worker = MarkWorker(
+                    persona=p,
+                    shared_log=self._log,
+                    startup_delay=i * 1.5,
+                )
+            else:
+                worker = LiveAgentWorker(
+                    persona=p,
+                    shared_log=self._log,
+                    startup_delay=i * 1.5,
+                )
             self._wire_agent(worker)
             self._agents[p["id"]] = worker
             worker.start()
