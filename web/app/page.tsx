@@ -118,15 +118,16 @@ export default function HomePage() {
           },
           // Disable DTX (discontinuous transmission) which can cause choppiness
           dtx: false,
-          // Use RED (Redundant Encoding) for packet loss recovery
-          red: true,
-        },
-        // CRITICAL: Disable webAudioMix. The custom WebAudio time-stretching jitter buffer
-        // causes metallic, bit-crushed, granular artifacts. Use native browser NetEq instead.
-        webAudioMix: false,
-        adaptiveStream: false,             // Disable - can cause quality fluctuations
-        dynacast: false,                   // Disable - can cause switching artifacts
-      }}
+        // Use RED (Redundant Encoding) for packet loss recovery
+        red: true,
+      },
+      // CRITICAL: webAudioMix: true. With backend pacing implemented,
+      // native browser jitter buffering (NetEq) works optimally and software mixing
+      // handles echo and volume consistently across browsers.
+      webAudioMix: true,
+      adaptiveStream: false,             // Disable - can cause quality fluctuations
+      dynacast: false,                   // Disable - can cause switching artifacts
+    }}
       onDisconnected={() => {
         disconnect();
         setMessages((prev) => [
@@ -302,173 +303,27 @@ export default function HomePage() {
   );
 }
 
-// ── Custom Audio Renderer with Queueing ───────────────────────────────────────
+// ── Custom Audio Renderer (Native NetEq) ────────────────────────────────────
 function CustomAudioRenderer() {
   const room = useRoomContext();
   const [audioError, setAudioError] = useState<string | null>(null);
 
-  // Audio Context and Queue state
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const queueRef = useRef<Float32Array[]>([]);
-  const isPlayingRef = useRef<boolean>(false);
-  const nextStartTimeRef = useRef<number>(0);
-
-  // Process the queue
-  const playNextInQueue = useCallback(() => {
-    if (!audioCtxRef.current) return;
-    
-    if (queueRef.current.length === 0) {
-       isPlayingRef.current = false;
-       return;
-    }
-
-    isPlayingRef.current = true;
-    const ctx = audioCtxRef.current;
-    if (ctx.state === 'suspended') {
-      ctx.resume().catch(console.error);
-    }
-
-    const nextTime = Math.max(ctx.currentTime, nextStartTimeRef.current);
-    
-    // Dequeue all buffered chunks to avoid dropping context. We concatenate them into a single buffer
-    // to improve scheduling efficiency.
-    const chunks = queueRef.current;
-    queueRef.current = [];
-
-    let totalLength = 0;
-    for (const chunk of chunks) totalLength += chunk.length;
-
-    const audioBuffer = ctx.createBuffer(1, totalLength, 16000); // LiveKit outputs 16kHz to browser
-    const channelData = audioBuffer.getChannelData(0);
-
-    let offset = 0;
-    for (const chunk of chunks) {
-      channelData.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    const source = ctx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(ctx.destination);
-    
-    source.start(nextTime);
-    nextStartTimeRef.current = nextTime + audioBuffer.duration;
-
-    source.onended = () => {
-       // Only trigger the next batch if there are actually items in the queue.
-       // Otherwise, we wait for the next incoming chunk to restart playback.
-       if (queueRef.current.length > 0) {
-           playNextInQueue();
-       } else {
-           isPlayingRef.current = false;
-       }
-    };
-  }, []);
-
   useEffect(() => {
-    // Initialize AudioContext
-    const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-    audioCtxRef.current = new AudioContext({ sampleRate: 16000 });
-
-    const handleTrackSubscribed = (track: any, publication: any, participant: any) => {
+    const handleTrackSubscribed = (track: any) => {
       if (track.kind !== Track.Kind.Audio) return;
-
-      console.log("[Audio] Track subscribed:", {
-        sid: track.sid,
-        participant: participant.identity,
-      });
-
+      console.log("[Audio] Track successfully subscribed for native rendering:", track.sid);
       setAudioError(null);
-
-      // Listen for raw audio data if WebRTC track supports Insertable Streams or MediaStreamTrackProcessor
-      // Since LiveKit SDK abstracts this, we need to extract the MediaStreamTrack
-      const mediaStreamTrack = track.mediaStreamTrack;
-      if (!mediaStreamTrack) return;
-
-      try {
-         // Setup Web Audio API to capture the incoming stream and insert it into our queue.
-         const ctx = audioCtxRef.current;
-         if (!ctx) return;
-         
-         const stream = new MediaStream([mediaStreamTrack]);
-         const sourceNode = ctx.createMediaStreamSource(stream);
-
-         // We use an AudioWorklet or ScriptProcessor to intercept the raw PCM
-         // For maximum compatibility in this demo, we'll use ScriptProcessorNode (deprecated but widely supported)
-         const processor = ctx.createScriptProcessor(1024, 1, 1);
-         
-         processor.onaudioprocess = (e) => {
-            const inputData = e.inputBuffer.getChannelData(0);
-            
-            // Check if there's actual audio (not complete silence)
-            let isSilence = true;
-            for (let i = 0; i < inputData.length; i++) {
-                if (Math.abs(inputData[i]) > 0.001) {
-                    isSilence = false;
-                    break;
-                }
-            }
-
-            if (!isSilence) {
-               // Clone the data to push it to our queue
-               queueRef.current.push(new Float32Array(inputData));
-               
-               if (!isPlayingRef.current) {
-                  // Wait a tiny bit before starting to allow a buffer to build up
-                  if (queueRef.current.length > 3) {
-                     nextStartTimeRef.current = ctx.currentTime + 0.05; // 50ms buffer
-                     playNextInQueue();
-                  }
-               }
-            }
-         };
-
-         // Mute the raw WebRTC track so we only hear our scheduled version
-         mediaStreamTrack.enabled = false;
-         
-         sourceNode.connect(processor);
-         // Processor needs to be connected to destination to fire 'onaudioprocess', but we mute it with a gain node
-         const nullGain = ctx.createGain();
-         nullGain.gain.value = 0;
-         processor.connect(nullGain);
-         nullGain.connect(ctx.destination);
-         
-         // Keep refs around for cleanup
-         (track as any)._processor = processor;
-         (track as any)._nullGain = nullGain;
-
-      } catch (err: any) {
-         console.error("Failed to setup audio queue", err);
-         setAudioError(err.message);
-      }
-    };
-
-    const handleTrackUnsubscribed = (track: any) => {
-      if (track.kind !== Track.Kind.Audio) return;
-      console.log("[Audio] Track unsubscribed:", track.sid);
-      
-      // Cleanup custom nodes
-      if ((track as any)._processor) {
-          (track as any)._processor.disconnect();
-          (track as any)._nullGain.disconnect();
-      }
     };
 
     room.on(RoomEvent.TrackSubscribed, handleTrackSubscribed);
-    room.on(RoomEvent.TrackUnsubscribed, handleTrackUnsubscribed);
-
     return () => {
       room.off(RoomEvent.TrackSubscribed, handleTrackSubscribed);
-      room.off(RoomEvent.TrackUnsubscribed, handleTrackUnsubscribed);
-      if (audioCtxRef.current) {
-         audioCtxRef.current.close();
-      }
     };
-  }, [room, playNextInQueue]);
+  }, [room]);
 
   return (
     <>
-      {/* We DO NOT render RoomAudioRenderer here because we are manually routing the MediaStreamTrack */}
+      <RoomAudioRenderer />
       {audioError && (
         <div style={{
           position: "fixed",

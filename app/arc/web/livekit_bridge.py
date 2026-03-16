@@ -74,6 +74,7 @@ class LiveKitBridge(QObject):
 
         self._pending_packets: list = []
         self._shutdown_event: Optional[asyncio.Event] = None
+        self._audio_queue: Optional[asyncio.Queue[rtc.AudioFrame]] = None
 
     def _safe_emit(self, signal: pyqtSignal, *args):
         """Emit a signal ONLY if this QObject has not been deleted by C++."""
@@ -187,7 +188,7 @@ class LiveKitBridge(QObject):
 
     def _on_agent_audio(self, agent_id: str, pcm_bytes: bytes):
         # _loop_ready is set only after _audio_source exists — no None race.
-        if not self._loop_ready.is_set():
+        if not self._loop_ready.is_set() or self._audio_queue is None:
             return
         samples_per_channel = len(pcm_bytes) // 2
         frame = rtc.AudioFrame(
@@ -196,9 +197,8 @@ class LiveKitBridge(QObject):
             num_channels=1,
             samples_per_channel=samples_per_channel,
         )
-        asyncio.run_coroutine_threadsafe(
-            self._audio_source.capture_frame(frame), self._loop
-        )
+        # Instead of capturing immediately (which "bursts"), we queue for the pacer
+        self._loop.call_soon_threadsafe(self._audio_queue.put_nowait, frame)
 
     # ── PyQt6 → LiveKit (event broadcasts) ────────────────────────────────
 
@@ -298,10 +298,14 @@ class LiveKitBridge(QObject):
         self._audio_track = rtc.LocalAudioTrack.create_audio_track(
             "agent-audio", self._audio_source
         )
+        self._audio_queue = asyncio.Queue()
 
         # 4. Signal readiness — from this point _on_agent_audio and
         #    _broadcast_json are safe to run.
         self._loop_ready.set()
+
+        # 5. Start the Pacer Loop
+        pacer_task = asyncio.create_task(self._pacer_loop())
 
         url = os.environ.get("LIVEKIT_URL")
         api_key = os.environ.get("LIVEKIT_API_KEY")
@@ -360,9 +364,50 @@ class LiveKitBridge(QObject):
             logger.error("[LiveKit] Fatal error: %s", exc, exc_info=True)
         finally:
             self._loop_ready.clear()
+            pacer_task.cancel()
+            try:
+                await pacer_task
+            except asyncio.CancelledError:
+                pass
             if self._room:
                 await self._room.disconnect()
             self._safe_emit(self.connection_state_changed, "disconnected")
+
+    async def _pacer_loop(self):
+        """
+        Pacer Loop: pulling AudioFrames from the queue and sending them to 
+        LiveKit at the correct real-time frequency to avoid "bursting".
+        """
+        while True:
+            try:
+                if self._audio_queue is None:
+                    await asyncio.sleep(0.1)
+                    continue
+
+                frame = await self._audio_queue.get()
+                
+                # Calculate duration of this frame to know how long to wait
+                # duration = samples / sample_rate
+                duration_s = frame.samples_per_channel / frame.sample_rate
+                
+                start_time = asyncio.get_event_loop().time()
+                
+                if self._audio_source:
+                    await self._audio_source.capture_frame(frame)
+                
+                # Wait for the duration of the frame minus capture time
+                elapsed = asyncio.get_event_loop().time() - start_time
+                wait_time = max(0, duration_s - elapsed)
+                
+                if wait_time > 0:
+                    await asyncio.sleep(wait_time)
+                
+                self._audio_queue.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("[LiveKit] Pacer loop error: %s", e)
+                await asyncio.sleep(0.1)
 
     def stop(self):
         """Signal the background thread to exit and wait for it."""
