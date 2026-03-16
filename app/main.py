@@ -36,9 +36,9 @@ def main():
     # The controller is fully wired before the asyncio loop starts.
     win = MainWindow(lk_bridge=lk_bridge)
 
-    # Start the background loop AFTER the window is constructed so
-    # _controller is never None when the first data packet arrives.
-    lk_bridge.start_background()
+    # win.session_controller is ready, but we wait for the user to click "Invite"
+    # to actually start the background LiveKit thread.
+    # lk_bridge.start_background()
 
     win.show()
 

@@ -55,6 +55,13 @@ class AgentGenerationThread(QThread):
                 "- blob_colors: an array of EXACTLY 5 lists, where each list is [R, G, B, phase, speed, amplitude]. "
                 "For example: [200, 50, 50, 0.0, 0.5, 1.0]. Choose 5 distinct colors matching the persona's vibe.\n"
                 "Return only valid JSON. Do NOT wrap in markdown.\n\n"
+                "IMPORTANT CAPABILITIES: Every agent has the following background capabilities that run independently:\n"
+                "1. Google Search — use it whenever the user asks a factual question.\n"
+                "2. Computer Use — use the trigger_computer_use tool when the user asks you to interact with a computer, open apps, browse websites, fill forms, or automate tasks.\n"
+                "3. Image Generation — use the trigger_image_generation tool when the user asks you to create, generate, or draw an image.\n\n"
+                "IMPORTANT BEHAVIOR RULES:\n"
+                "- When you receive a [BACKGROUND UPDATE] message in your context, narrate it naturally and conversationally. Do NOT read it verbatim.\n"
+                "- You can talk freely with the user WHILE Computer Use or Image Generation is running in the background.\n"
                 "IMPORTANT STYLE RULE: Do NOT use special characters for formatting, such as ** (bold), * (italics), or any other complex markdown in the instruction text. Keep the text formatting very simple.\n\n"
                 "--- RULES FOR AGENT CREATION ---\n"
             ) + skill_text

@@ -15,6 +15,7 @@ All business logic lives in SessionController.
 from __future__ import annotations
 
 import sys
+import logging
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -38,6 +39,9 @@ from .widgets.controls        import (
 from .agent_creator import AgentCreatorDialog
 
 
+logger = logging.getLogger(__name__)
+
+
 class MainWindow(QMainWindow):
 
     def __init__(self, lk_bridge: LiveKitBridge | None = None):
@@ -52,16 +56,6 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._apply_theme()
 
-        # Wire settings signals
-        self._chk_proactive.toggled.connect(
-            lambda _: self._restart_session("Reconnecting (settings changed)…")
-        )
-        self._chk_affective.toggled.connect(
-            lambda _: self._restart_session("Reconnecting (settings changed)…")
-        )
-        self._chk_lookahead.toggled.connect(
-            lambda _: self._restart_session("Reconnecting (settings changed)…")
-        )
 
         # Start session
         self._start_session()
@@ -89,11 +83,27 @@ class MainWindow(QMainWindow):
         self._splitter.addWidget(self._build_left_panel())
 
         self._console = EventConsole(
+            title="EVENT CONSOLE",
             agent_names={p["id"]: p["name"] for p in AGENT_PERSONAS})
         self._console.setVisible(False)
         self._console.setMinimumWidth(300)
         self._splitter.addWidget(self._console)
-        self._splitter.setSizes([1000, 400])
+
+        self._cu_console = EventConsole(
+            title="COMPUTER USE CONSOLE",
+            agent_names={p["id"]: p["name"] for p in AGENT_PERSONAS})
+        self._cu_console.setVisible(False)
+        self._cu_console.setMinimumWidth(300)
+        self._splitter.addWidget(self._cu_console)
+
+        self._img_console = EventConsole(
+            title="IMAGE GEN CONSOLE",
+            agent_names={p["id"]: p["name"] for p in AGENT_PERSONAS})
+        self._img_console.setVisible(False)
+        self._img_console.setMinimumWidth(300)
+        self._splitter.addWidget(self._img_console)
+
+        self._splitter.setSizes([1000, 400, 400, 400])
 
         root.addWidget(self._splitter, 1)
         root.addWidget(self._build_bottom_bar())
@@ -125,11 +135,6 @@ class MainWindow(QMainWindow):
         hl.addWidget(self._add_agent_btn)
         hl.addSpacing(8)
 
-        self._chk_proactive = styled_checkbox("Proactivity")
-        self._chk_affective = styled_checkbox("Affective Dialog")
-        self._chk_lookahead = styled_checkbox("Look-ahead")
-        self._chk_lookahead.setChecked(True)
-        hl.addWidget(self._chk_proactive); hl.addWidget(self._chk_affective); hl.addWidget(self._chk_lookahead)
         hl.addSpacing(12)
 
         self._btn_console = toggle_btn("Console")
@@ -137,8 +142,24 @@ class MainWindow(QMainWindow):
             lambda checked: self._console.setVisible(checked))
         hl.addWidget(self._btn_console); hl.addSpacing(10)
 
+        self._btn_cu_console = toggle_btn("CompConsole")
+        self._btn_cu_console.toggled.connect(
+            lambda checked: self._cu_console.setVisible(checked))
+        hl.addWidget(self._btn_cu_console); hl.addSpacing(10)
+
+        self._btn_img_console = toggle_btn("IMGConsole")
+        self._btn_img_console.toggled.connect(
+            lambda checked: self._img_console.setVisible(checked))
+        hl.addWidget(self._btn_img_console); hl.addSpacing(10)
+
+        # Invite button
+        self._invite_btn = text_btn("Invite", primary=True)
+        self._invite_btn.clicked.connect(self._on_invite_clicked)
+        hl.addWidget(self._invite_btn)
+        hl.addSpacing(10)
+
         # Added LiveKit specific status indicator logic as requested by User
-        self._lk_status_lbl = QLabel("")
+        self._lk_status_lbl = QLabel("LiveKit: OFF")
         self._lk_status_lbl.setFont(QFont(FONT_MONO, 8))
         self._lk_status_lbl.setStyleSheet(f"color:{P['text3']};")
         hl.addWidget(self._lk_status_lbl)
@@ -286,11 +307,7 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════════════════════
 
     def _start_session(self):
-        ctrl = SessionController(
-            proactivity=self._chk_proactive.isChecked(),
-            affective_dialog=self._chk_affective.isChecked(),
-            enable_lookahead=self._chk_lookahead.isChecked(),
-        )
+        ctrl = SessionController()
         # Agent tile animation
         ctrl.agent_speaking.connect(self._on_agent_speaking)
         # Transcript
@@ -299,8 +316,10 @@ class MainWindow(QMainWindow):
         ctrl.output_transcription.connect(self._transcript.on_output_transcription)
         ctrl.turn_complete.connect(self._transcript.on_turn_complete)
         ctrl.interrupted.connect(self._transcript.on_interrupted)
-        # Console
+        # Consoles
         ctrl.event_logged.connect(self._console.log)
+        ctrl.cu_logged.connect(self._cu_console.log)
+        ctrl.img_logged.connect(self._img_console.log)
         # Status / error
         ctrl.agent_status.connect(self._on_agent_status)
         ctrl.agent_error.connect(
@@ -322,8 +341,8 @@ class MainWindow(QMainWindow):
             self._lk_bridge.connection_state_changed.connect(
                 self._update_livekit_indicator
             )
-            # Fetch the current state
-            self._update_livekit_indicator(self._lk_bridge.connection_state)
+            # DO NOT start background automatically here anymore as per User requirement
+            # self._update_livekit_indicator(self._lk_bridge.connection_state)
 
         model   = LIVE_MODEL_GEMINI
         short   = model.split("/")[-1] if "/" in model else model
@@ -331,6 +350,7 @@ class MainWindow(QMainWindow):
         self._model_lbl.setText(f"{backend}  ·  {short}")
 
     def _restart_session(self, reason: str = "Reconnecting…"):
+        logger.info("[MainWindow] Restarting session, reason: %s", reason)
         if self._controller:
             self._controller.stop()
             self._controller = None
@@ -363,6 +383,30 @@ class MainWindow(QMainWindow):
         color = P['green'] if state == 'connected' else P['yellow'] if state == 'connecting' else P['red']
         self._lk_status_lbl.setText(f"LiveKit: {state.upper()}")
         self._lk_status_lbl.setStyleSheet(f"color:{color}; font-weight: bold;")
+        if state == 'connected':
+            self._invite_btn.setEnabled(False)
+            self._invite_btn.setText("In Session")
+
+    def _on_invite_clicked(self):
+        link = "https://arc-fff.vercel.app/"
+        QMessageBox.information(
+            self, "Invite Participants",
+            f"Share this link with participants to invite them to the meeting:<br><br>"
+            f"<a href='{link}'>{link}</a><br><br>"
+            "LiveKit bridge is starting...",
+        )
+        # Copy to clipboard
+        from PyQt6.QtWidgets import QApplication
+        QApplication.clipboard().setText(link)
+        self._transcript.add_system(f"🔗 Shareable link copied to clipboard: {link}")
+
+        if self._lk_bridge:
+            # Check if already started or start it
+            if not getattr(self, "_lk_started", False):
+                self._lk_bridge.start_background()
+                self._lk_started = True
+                self._lk_status_lbl.setText("LiveKit: STARTING...")
+                self._lk_status_lbl.setStyleSheet(f"color:{P['yellow']};")
 
     # ══════════════════════════════════════════════════════════════════════════
     # Slots
@@ -505,6 +549,8 @@ class MainWindow(QMainWindow):
             self._video_row_layout.insertWidget(max(0, user_idx), tile, 2)
             
             self._console._agent_names[persona["id"]] = persona["name"]
+            self._cu_console._agent_names[persona["id"]] = persona["name"]
+            self._img_console._agent_names[persona["id"]] = persona["name"]
             self._transcript.register_agent(persona["id"], persona["name"])
             
             # 3. Dynamic injection into SessionController

@@ -90,8 +90,12 @@ def _llm_route_user(
         "Silent conference moderator. Respond ONLY with JSON, no markdown.\n\n"
         f"Agents:\n{agents_desc}\n\n"
         f"Last active: {last_id}\n\n"
-        "Rules: pick the agent whose field best matches the question. "
-        "If redirect ('other one', 'not you'), pick the peer of last_active.\n"
+        "Rules:\n"
+        "1. PRIORITIZE NAMES: If the user mentions an agent's name (e.g., 'Nova', 'Lex', 'Mark'), YOU MUST route to that agent.\n"
+        "2. TASK CAPABILITY: All agents (Nova, Lex, Mark) can now perform background tasks: Google Search, Computer Use, and Image Generation. "
+        "Do NOT route to Mark just because the user asks for a computer task or an image; route based on who the user is talking to.\n"
+        "3. FIELD MATCH: If no name is mentioned, pick the agent whose field best matches the question.\n"
+        "4. REDIRECT: If redirect ('other one', 'not you'), pick the peer of last_active.\n"
         f'Output: {{"agent_id":"<id>","reason":"<one sentence>"}}\n\n'
         f"Last 2 turns:\n{recent_2_turns or '(none)'}\n\n"
         f"User says: {user_text}"
@@ -291,6 +295,7 @@ class OrchestratorWorker(QThread):
         self._id_to_p = {p["id"]: p for p in personas}
         self._api_key = GEMINI_ENV.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
         self._last_id = personas[0]["id"] if personas else ""
+        self.setObjectName("Orchestrator")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -333,6 +338,7 @@ class OrchestratorWorker(QThread):
         })
 
     def shutdown(self):
+        logger.info("[Orchestrator] Shutdown requested")
         self._q.put({"type": "stop"})
 
     # ── Thread loop ───────────────────────────────────────────────────────────
@@ -380,13 +386,22 @@ class OrchestratorWorker(QThread):
             self._emit(force_id, user_text, "forced", history_snapshot)
             return
 
-        # 2. Explicit redirect
+        # 2. Explicit name address (heuristic check before LLM)
+        lower_input = user_text.lower()
+        for aid, p in self._id_to_p.items():
+            name = p["name"].lower()
+            # Catch "Hey Nova", "Nova,", "Nova can you", etc.
+            if re.search(rf"\b{re.escape(name)}\b", lower_input):
+                self._emit(aid, user_text, "name-match", history_snapshot)
+                return
+
+        # 3. Explicit redirect
         if _wants_other_agent(user_text):
             peer = _peer_of(self._last_id, self._personas)
             self._emit(peer, user_text, "redirected", history_snapshot)
             return
 
-        # 3. LLM fallback (last 2 turns, metadata-only)
+        # 4. LLM fallback (last 2 turns, metadata-only)
         recent_2 = self._log.as_text(max_tokens=200, window=2)
         try:
             agent_id = _llm_route_user(

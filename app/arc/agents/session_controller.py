@@ -62,6 +62,8 @@ class SessionController(QObject):
     event_logged         = pyqtSignal(str, dict)
     active_agent_changed = pyqtSignal(str)
     routing_note         = pyqtSignal(str)
+    cu_logged            = pyqtSignal(str, dict)  # agent_id, event
+    img_logged           = pyqtSignal(str, dict)  # agent_id, event
     # Mark-specific: emitted when Image Generation completes
     image_ready          = pyqtSignal(str)  # absolute path to generated image
     user_message         = pyqtSignal(str)  # when a user message is injected via text
@@ -71,15 +73,9 @@ class SessionController(QObject):
 
     def __init__(
         self,
-        proactivity: bool = False,
-        affective_dialog: bool = False,
-        enable_lookahead: bool = True,
         parent=None,
     ):
         super().__init__(parent)
-        self.proactivity      = proactivity
-        self.affective_dialog = affective_dialog
-        self.enable_lookahead = enable_lookahead
 
         # One SharedConversationLog shared by all workers + orchestrator.
         # Lives in an anonymous mmap — all threads read the same memory pages.
@@ -91,29 +87,13 @@ class SessionController(QObject):
         self._recording:    bool = False
         self._mic_owner_id: str  = AGENT_PERSONAS[0]["id"]
 
-        # Look-ahead handoff: (from_id, to_id) while current speaker is still
-        # playing audio.  None means no pending handoff is outstanding.
-        self._pending_handoff: tuple[str, str] | None = None
-
         # Deferred A2A: when an agent whose audio is held completes its LLM
         # turn, we cannot run A2A detection immediately (it would start
         # preparing the NEXT reply before the current one even plays).
         # We store the agent_id here and run A2A when the hold is released.
         self._deferred_a2a: str | None = None
 
-        # Timer that polls the current speaker's audio buffer every 50 ms.
-        # When the buffer drains, releases the incoming agent and immediately
-        # runs any deferred A2A so the next look-ahead can begin right away.
-        self._handoff_poll_timer = QTimer(self)
-        self._handoff_poll_timer.setInterval(50)
-        self._handoff_poll_timer.timeout.connect(self._check_pending_handoff)
-
-        # Delayed release: after the poll detects buffer drain, a random
-        # 3-5 s pause fires before the incoming agent is actually released.
-        # Stores the to_id so it can be cancelled if a new route supersedes.
-        self._pending_release_to_id: str | None = None
-        self._MIN_PAUSE_MS = 500
-        self._MAX_PAUSE_MS = 3000
+        # Name → id lookup built from personas
 
         # Name → id lookup built from personas
         self._name_to_id: dict[str, str] = {
@@ -126,25 +106,12 @@ class SessionController(QObject):
         personas = AGENT_PERSONAS
 
         for i, p in enumerate(personas):
-            # Mark gets its own MarkWorker subclass; all others use LiveAgentWorker.
-            if p["id"] == "mark":
-                worker = MarkWorker(
-                    persona=p,
-                    shared_log=self._log,
-                    proactivity=self.proactivity,
-                    affective_dialog=self.affective_dialog,
-                    startup_delay=i * 1.5,
-                )
-                # Forward Mark's image_ready signal to the UI layer
-                worker.image_ready.connect(self.image_ready)
-            else:
-                worker = LiveAgentWorker(
-                    persona=p,
-                    shared_log=self._log,
-                    proactivity=self.proactivity,
-                    affective_dialog=self.affective_dialog,
-                    startup_delay=i * 1.5,
-                )
+            # All agents now use the enhanced LiveAgentWorker
+            worker = LiveAgentWorker(
+                persona=p,
+                shared_log=self._log,
+                startup_delay=i * 1.5,
+            )
             self._wire_agent(worker)
             self._agents[p["id"]] = worker
             worker.start()
@@ -160,17 +127,33 @@ class SessionController(QObject):
         self._orchestrator.start()
 
     def stop(self):
+        """Gracefully shutdown all worker threads and clean up resources."""
         if self._recording:
             self.stop_recording()
+
+        # 1. Signal all workers to shutdown immediately
         if self._orchestrator:
+            logger.info("[SessionController] Shutting down orchestrator...")
             self._orchestrator.shutdown()
-            self._orchestrator.wait(3000)
-            self._orchestrator = None
-        for w in self._agents.values():
+            
+        for aid, w in self._agents.items():
+            logger.info(f"[SessionController] Shutting down agent worker: {aid}")
             w.shutdown()
-            w.wait(3000)
+
+        # 2. Wait for them to actually exit. Total wait is no longer cumulative.
+        # We give them a decent window to close network connections / audio devices.
+        if self._orchestrator:
+            if not self._orchestrator.wait(4000):
+                logger.warning("[SessionController] Orchestrator timed out during shutdown.")
+            self._orchestrator = None
+
+        for aid, w in self._agents.items():
+            if not w.wait(4000):
+                logger.warning(f"[SessionController] Agent {aid} timed out during shutdown.")
+        
         self._agents.clear()
         self._log.clear()
+        logger.info("[SessionController] Stop complete.")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -198,8 +181,6 @@ class SessionController(QObject):
         worker = LiveAgentWorker(
             persona=persona,
             shared_log=self._log,
-            proactivity=self.proactivity,
-            affective_dialog=self.affective_dialog,
             startup_delay=0.0,
         )
         self._wire_agent(worker)
@@ -296,6 +277,13 @@ class SessionController(QObject):
             lambda s, _id=aid: self.agent_status.emit(_id, s))
         worker.error_occurred.connect(
             lambda e, _id=aid: self.agent_error.emit(_id, e))
+        worker.cu_logged.connect(
+            lambda ev, _id=aid: self.cu_logged.emit(_id, ev))
+        worker.img_logged.connect(
+            lambda ev, _id=aid: self.img_logged.emit(_id, ev))
+        
+        # Forward image_ready signal to the UI layer for all agents
+        worker.image_ready.connect(self.image_ready)
         
         # Audio bridging to WS
         if hasattr(worker, 'audio_chunk'):
@@ -343,36 +331,9 @@ class SessionController(QObject):
 
         current_agent = self._agents.get(self._active_id)
         switching     = agent_id != self._active_id
-        current_speaking = switching and current_agent and current_agent.is_speaking and self.enable_lookahead
 
-        if current_speaking:
-            # ── Look-ahead path ───────────────────────────────────────────────
-            # Cancel any pending timed release (a previous look-ahead resolved
-            # or was superseded by this new routing decision).
-            if self._pending_release_to_id:
-                prev_to = self._pending_release_to_id
-                self._pending_release_to_id = None
-                prev_worker = self._agents.get(prev_to)
-                if prev_worker:
-                    prev_worker.release_audio()
-
-            # Cancel any previous pending handoff cleanly.
-            if self._pending_handoff:
-                _, prev_pending_to = self._pending_handoff
-                pending_worker = self._agents.get(prev_pending_to)
-                if pending_worker:
-                    pending_worker.release_audio()  # let it play if it had received audio
-
-            # Start the incoming agent generating, but hold its audio.
-            incoming = self._agents[agent_id]
-            incoming.hold_audio()
-            incoming.deliver_text(enriched_text)
-            self._pending_handoff = (self._active_id, agent_id)
-            self._handoff_poll_timer.start()   # begin polling the buffer
-
-            # Emit routing note so the UI shows who is being prepared.
-            name = next((p["name"] for p in AGENT_PERSONAS if p["id"] == agent_id), agent_id)
-            self.routing_note.emit(f"⏳ {name} preparing (look-ahead)")
+        if False: # Path removed: Look-ahead
+            pass
         else:
             # ── Instant handoff path (original behaviour) ─────────────────────
             if switching:
@@ -386,56 +347,6 @@ class SessionController(QObject):
 
             if self._recording:
                 self.switch_mic_to(agent_id)
-
-    def _check_pending_handoff(self):
-        """Polling callback (50 ms interval).
-
-        Waits for the current speaker's audio buffer to drain, then starts a
-        random 3-5 s natural pause before releasing the incoming agent.
-        The incoming agent's audio is already buffered and ready to play
-        instantly when the pause expires — zero LLM wait on release.
-        """
-        if not self._pending_handoff:
-            self._handoff_poll_timer.stop()
-            return
-
-        from_id, to_id = self._pending_handoff
-        from_worker    = self._agents.get(from_id)
-
-        if from_worker is None or from_worker._audio.buffered_seconds < 0.05:
-            # Current speaker exhausted -- schedule the natural pause + release.
-            self._pending_handoff = None
-            self._handoff_poll_timer.stop()
-            self._pending_release_to_id = to_id
-            delay_ms = random.randint(self._MIN_PAUSE_MS, self._MAX_PAUSE_MS)
-            QTimer.singleShot(delay_ms, self._do_release)
-
-    def _do_release(self):
-        """Called after the random pause expires.
-
-        Releases the held agent and triggers deferred A2A immediately so the
-        look-ahead chain continues: at release time the buffer is full and
-        is_speaking = True, so the next routing takes the look-ahead path too.
-        Cancellable: clear _pending_release_to_id before the timer fires.
-        """
-        to_id = self._pending_release_to_id
-        if to_id is None:
-            return  # cancelled by a newer routing decision
-        self._pending_release_to_id = None
-
-        incoming = self._agents.get(to_id)
-        if incoming:
-            self._active_id = to_id
-            self.active_agent_changed.emit(to_id)
-            incoming.release_audio()
-            if self._orchestrator:
-                self._orchestrator.set_last_active(to_id)
-            if self._recording:
-                self.switch_mic_to(to_id)
-
-            if self._deferred_a2a == to_id:
-                self._deferred_a2a = None
-                self._run_a2a_for(to_id)
 
     def _run_a2a_for(self, agent_id: str):
 

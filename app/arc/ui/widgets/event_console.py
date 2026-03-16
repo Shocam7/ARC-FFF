@@ -19,8 +19,9 @@ from ...core.config import P, FONT_UI, FONT_MONO
 
 
 class EventConsole(QWidget):
-    def __init__(self, agent_names: dict[str, str] | None = None, parent=None):
+    def __init__(self, title: str = "EVENT CONSOLE", agent_names: dict[str, str] | None = None, parent=None):
         super().__init__(parent)
+        self._title = title
         self._agent_names = agent_names or {}
         self._show_audio  = False
         self._build()
@@ -36,7 +37,7 @@ class EventConsole(QWidget):
             f"background:{P['surface']};border-bottom:1px solid {P['border']};")
         hl = QHBoxLayout(hdr); hl.setContentsMargins(14, 0, 10, 0)
 
-        t = QLabel("EVENT CONSOLE")
+        t = QLabel(self._title)
         t.setFont(QFont(FONT_MONO, 8))
         t.setStyleSheet(f"color:{P['text3']};letter-spacing:2px;")
         hl.addWidget(t); hl.addStretch()
@@ -107,6 +108,15 @@ class EventConsole(QWidget):
         self._text.moveCursor(QTextCursor.MoveOperation.End)
 
     def _classify(self, ev: dict) -> tuple[str, str, str]:
+        if ev.get("subagent"):
+            sa = ev["subagent"]
+            emojis = {"computer_use": "💻", "image_generation": "🎨"}
+            emoji = emojis.get(sa, "🤖")
+            summary = ev.get("summary", "Subagent task")
+            status  = ev.get("status")
+            color   = P["accent"] if status == "running" else P["green"] if status == "completed" else P["red"] if status == "failed" else P["text2"]
+            return emoji, summary, color
+
         if ev.get("turnComplete"):        return "✓", "Turn complete",  P["green"]
         if ev.get("interrupted"):         return "⏸", "Interrupted",    P["yellow"]
         if ev.get("inputTranscription"):

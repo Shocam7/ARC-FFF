@@ -78,13 +78,13 @@ class LiveKitBridge(QObject):
 
     def _safe_emit(self, signal: pyqtSignal, *args):
         """Emit a signal ONLY if this QObject has not been deleted by C++."""
-        if not sip.isdeleted(self):
-            try:
+        try:
+            if not sip.isdeleted(self):
                 signal.emit(*args)
-            except RuntimeError:
-                # Still might catch the "wrapped C/C++ object has been deleted"
-                # if it's deleted between the check and the emit.
-                pass
+        except (RuntimeError, ReferenceError):
+            # Still might catch the "wrapped C/C++ object has been deleted"
+            # if it's deleted between the check and the emit.
+            pass
 
     @property
     def connection_state(self) -> str:
@@ -238,6 +238,8 @@ class LiveKitBridge(QObject):
         if track.kind == rtc.TrackKind.KIND_AUDIO:
             audio_stream = rtc.AudioStream(track, sample_rate=16000, num_channels=1)
             async for event in audio_stream:
+                if sip.isdeleted(self):
+                    break
                 if self._controller:
                     self._controller.inject_audio(bytes(event.frame.data))
 
@@ -255,6 +257,9 @@ class LiveKitBridge(QObject):
             len(dp.data),
             participant_id,
         )
+
+        if sip.isdeleted(self):
+            return
 
         if not self._controller:
             logger.warning("[LiveKit] Controller not attached — queuing packet")
@@ -341,11 +346,13 @@ class LiveKitBridge(QObject):
 
         @self._room.on("data_received")
         def on_data_received(dp: rtc.DataPacket):
-            asyncio.ensure_future(self._handle_data_received(dp))
+            if not sip.isdeleted(self):
+                asyncio.ensure_future(self._handle_data_received(dp))
 
         @self._room.on("connection_state_changed")
         def on_connection_state_changed(state):
-            self._safe_emit(self.connection_state_changed, self.connection_state)
+            if not sip.isdeleted(self):
+                self._safe_emit(self.connection_state_changed, self.connection_state)
 
         try:
             await self._room.connect(url, token)

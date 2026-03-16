@@ -115,6 +115,8 @@ def execute_action(tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
                 x = _scale_coord(float(x_arg), 0)
                 y = _scale_coord(float(y_arg), 1)
                 pyautogui.click(x, y)
+                import time
+                time.sleep(0.5)  # Wait for focus/animation
                 out = f"Typed at ({x}, {y})"
             else:
                 out = "Typed"
@@ -124,7 +126,7 @@ def execute_action(tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
                 pyautogui.press("enter")
             return {"status": "success", "output": out}
 
-        if name in {"key", "press", "press_key", "hotkey"}:
+        if name in {"key", "press", "press_key", "hotkey", "key_combination"}:
             key = tool_args.get("key") or tool_args.get("keys") or tool_args.get("value")
             if key is None:
                 return {"status": "error", "error": "key/press requires key or keys"}

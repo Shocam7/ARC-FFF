@@ -47,6 +47,7 @@ async def run_image_generation_background(
     bus: SessionBus,
     trigger_ev: asyncio.Event,
     prompt_ref: list,   # mutable single-element list: prompt_ref[0] = prompt string
+    on_event: callable = None,
 ):
     """
     Background coroutine — runs inside Mark's asyncio.gather().
@@ -70,17 +71,25 @@ async def run_image_generation_background(
     bus.write_img_status("generating")
 
     try:
+        if on_event:
+            on_event({"subagent": "image_generation", "status": "running", "summary": f"Generating image: {prompt[:80]}..."})
         # All blocking I/O runs in a thread so Mark's loop stays free ✓
         path = await asyncio.to_thread(_blocking_imagen_call, prompt)
+        if on_event:
+            on_event({"subagent": "image_generation", "status": "completed", "summary": f"Image saved to {os.path.basename(path)}", "result": path})
         bus.write_img_status("completed", result=path)
         logger.info("[ImageGen] Saved to: %s", path)
 
     except asyncio.CancelledError:
+        if on_event:
+            on_event({"subagent": "image_generation", "status": "failed", "summary": "Image generation cancelled"})
         bus.write_img_status("failed")
         logger.info("[ImageGen] Cancelled during generation")
         raise  # re-raise for asyncio task lifecycle
 
     except Exception as exc:
+        if on_event:
+            on_event({"subagent": "image_generation", "status": "failed", "summary": f"Error: {exc}"})
         bus.write_img_status("failed")
         logger.error("[ImageGen] Failed: %s", exc)
 

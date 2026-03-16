@@ -25,11 +25,10 @@ import uuid
 
 import numpy as np
 import sounddevice as sd
-
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from google.adk.agents import Agent
-from google.adk.tools import google_search
+from google.adk.tools import google_search, FunctionTool
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.runners import Runner
@@ -43,6 +42,9 @@ from ..core.config import (
     LIVE_MODEL_GEMINI,
 )
 from ..core.shared_memory import SharedConversationLog
+from ..shared.session_bus import SessionBus, SessionBusWatcher
+from ..subagents.computer_use.agent import run_computer_use_background
+from ..subagents.image_generation.agent import run_image_generation_background
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,8 @@ class LiveAgentWorker(QThread):
         event_logged(dict)
         status_changed(str)
         error_occurred(str)
+        audio_chunk(bytes)                 raw pcm bytes
+        image_ready(str)                   absolute path to generated image
     """
 
     text_received        = pyqtSignal(str, bool)
@@ -73,21 +77,20 @@ class LiveAgentWorker(QThread):
     status_changed       = pyqtSignal(str)
     error_occurred       = pyqtSignal(str)
     audio_chunk          = pyqtSignal(bytes)  # Emitted when agent generates an audio frame
+    image_ready          = pyqtSignal(str)    # Absolute path to the generated image file
+    cu_logged            = pyqtSignal(dict)   # Emitted for Computer Use subagent events
+    img_logged           = pyqtSignal(dict)   # Emitted for Image Generation subagent events
 
     def __init__(
         self,
         persona: dict,
         shared_log: SharedConversationLog,
-        proactivity: bool = False,
-        affective_dialog: bool = False,
         startup_delay: float = 0.0,
     ):
         super().__init__()
         self.persona          = persona
         self.agent_id: str    = persona["id"]
         self.agent_name: str  = persona["name"]
-        self.proactivity      = proactivity
-        self.affective_dialog = affective_dialog
         self._startup_delay   = startup_delay
 
         # Shared mmap log — same object across all workers + orchestrator
@@ -95,6 +98,7 @@ class LiveAgentWorker(QThread):
 
         self.user_id    = "arc-user"
         self.session_id = f"arc-{self.agent_id}-{uuid.uuid4().hex[:6]}"
+        self.setObjectName(f"Worker-{self.agent_name}")
 
         self._loop:      asyncio.AbstractEventLoop | None = None
         self._queue:     asyncio.Queue | None             = None
@@ -104,6 +108,25 @@ class LiveAgentWorker(QThread):
         self._mic:       sd.InputStream | None            = None
         self._recording  = False
         self._alive      = False
+        
+        # ── Mark-like capabilities (All agents now have these) ────────────────
+        # Shared action bus — written by background tasks, read by watcher
+        self._bus = SessionBus()
+
+        # Mutable refs — FunctionTools write to these before setting their events
+        self._cu_task_ref:    list[str] = [""]
+        self._img_prompt_ref: list[str] = [""]
+
+        # asyncio.Event gates — set via loop.call_soon_threadsafe from tool callbacks
+        self._cu_trigger:  asyncio.Event | None = None
+        self._img_trigger: asyncio.Event | None = None
+
+        # asyncio.Task handles — stored for .cancel() on shutdown
+        self._cu_bg_task:  asyncio.Task | None = None
+        self._img_bg_task: asyncio.Task | None = None
+
+        # Track last img_status so we emit image_ready exactly once
+        self._last_img_status: str = "idle"
         
         # Track turns to avoid duplicate history bugs
         self._turns_in_current_session = 0
@@ -170,6 +193,7 @@ class LiveAgentWorker(QThread):
         """Hard interrupt: clear audio buffer and reset — peer takes over immediately."""
         self._audio.clear()   # also releases hold if any
         self._reset_turn()
+        self.agent_speaking.emit(False)
 
     def hold_audio(self):
         """Gate this agent's audio output (buffer without playing).
@@ -197,11 +221,17 @@ class LiveAgentWorker(QThread):
         return self._turn_in_progress or self._audio.buffered_seconds > 0 or recent_audio
 
     def shutdown(self):
+        logger.info("[%s] Shutdown requested", self.agent_name)
         self._alive = False
         self.stop_recording()
-        if self._loop and self._queue:
-            self._loop.call_soon_threadsafe(
-                self._queue.put_nowait, {"type": "stop"})
+        if self._loop:
+            if self._cu_bg_task and not self._cu_bg_task.done():
+                self._loop.call_soon_threadsafe(self._cu_bg_task.cancel)
+            if self._img_bg_task and not self._img_bg_task.done():
+                self._loop.call_soon_threadsafe(self._img_bg_task.cancel)
+            if self._queue:
+                self._loop.call_soon_threadsafe(
+                    self._queue.put_nowait, {"type": "stop"})
 
     # ── QThread ───────────────────────────────────────────────────────────────
 
@@ -246,7 +276,41 @@ class LiveAgentWorker(QThread):
         # ── Backend selection ─────────────────────────────────────────────────
         os.environ.update(GEMINI_ENV)
         chosen_model = LIVE_MODEL_GEMINI
-        agent_tools  = [google_search]
+        
+        # ── Capture the running loop (before tools are defined)
+        loop = asyncio.get_running_loop()
+
+        # ── asyncio Events initialised here (inside the loop) ─────────────────
+        self._cu_trigger  = asyncio.Event()
+        self._img_trigger = asyncio.Event()
+
+        # ── ADK FunctionTools ─────────────────────────────────────────────────
+        def trigger_computer_use(task: str) -> str:
+            """
+            Trigger the Computer Use background agent.
+            Call this when the user asks you to interact with a computer,
+            open apps, browse websites, fill forms, or automate any desktop task.
+            """
+            self._cu_task_ref[0] = task
+            loop.call_soon_threadsafe(self._cu_trigger.set)
+            logger.info("[%s] Triggered Computer Use: %s", self.agent_name, task[:80])
+            return f"Computer Use task started: {task[:60]}"
+
+        def trigger_image_generation(prompt: str) -> str:
+            """
+            Generate an image using the Imagen model.
+            Call this when the user asks you to create, generate, or draw an image.
+            """
+            self._img_prompt_ref[0] = prompt
+            loop.call_soon_threadsafe(self._img_trigger.set)
+            logger.info("[%s] Triggered Image Generation: %s", self.agent_name, prompt[:80])
+            return f"Image generation started for: {prompt[:60]}"
+
+        agent_tools  = [
+            google_search,
+            FunctionTool(trigger_computer_use),
+            FunctionTool(trigger_image_generation),
+        ]
 
         _agent = Agent(
             name=f"arc_{self.agent_id}",
@@ -268,14 +332,26 @@ class LiveAgentWorker(QThread):
                 input_audio_transcription=types.AudioTranscriptionConfig(),
                 output_audio_transcription=types.AudioTranscriptionConfig(),
                 session_resumption=types.SessionResumptionConfig(),
-                proactivity=types.ProactivityConfig(proactive_audio=True) if self.proactivity else None,
-                enable_affective_dialog=self.affective_dialog or None,
+                # Context window compression — keeps long sessions alive
+                context_window_compression=types.ContextWindowCompressionConfig(
+                    trigger_tokens=32_000,
+                    sliding_window=types.SlidingWindow(
+                        target_tokens=16_000,
+                    ),
+                ),
             )
         else:
             cfg = RunConfig(
                 streaming_mode=StreamingMode.BIDI,
                 response_modalities=["TEXT"],
                 session_resumption=types.SessionResumptionConfig(),
+                # Context window compression for text models as well
+                context_window_compression=types.ContextWindowCompressionConfig(
+                    trigger_tokens=32_000,
+                    sliding_window=types.SlidingWindow(
+                        target_tokens=16_000,
+                    ),
+                ),
             )
 
         attempt = 0
@@ -289,6 +365,39 @@ class LiveAgentWorker(QThread):
                 self._audio.start()
                 self.status_changed.emit("connected")
 
+                # ── Background tasks — wrapped in create_task for .cancel() ✓
+                self._cu_bg_task  = asyncio.create_task(
+                    run_computer_use_background(
+                        self._bus,
+                        self._cu_trigger,
+                        self._cu_task_ref,
+                        on_event=lambda ev: self.cu_logged.emit(ev)
+                    ),
+                    name=f"{self.agent_id}-computer-use",
+                )
+                self._img_bg_task = asyncio.create_task(
+                    run_image_generation_background(
+                        self._bus,
+                        self._img_trigger,
+                        self._img_prompt_ref,
+                        on_event=lambda ev: self.img_logged.emit(ev)
+                    ),
+                    name=f"{self.agent_id}-image-gen",
+                )
+
+                # ── Bus watcher — inject milestones into LRQ ───────────
+                watcher = SessionBusWatcher()
+                watcher_task = asyncio.create_task(
+                    watcher.run(self._bus, self._lrq),
+                    name=f"{self.agent_id}-bus-watcher",
+                )
+
+                # ── Image-ready monitor — polls bus for img completion ─────────
+                monitor_task = asyncio.create_task(
+                    self._monitor_image_completion(),
+                    name=f"{self.agent_id}-img-monitor",
+                )
+
                 up_task   = asyncio.ensure_future(self._upstream())
                 down_task = asyncio.ensure_future(self._downstream(runner, cfg))
                 try:
@@ -296,19 +405,23 @@ class LiveAgentWorker(QThread):
                         {up_task, down_task},
                         return_when=asyncio.FIRST_COMPLETED,
                     )
+                    # Ensure exceptions are propagated to the retry logic
+                    for t in done:
+                        if not t.cancelled() and t.exception():
+                            raise t.exception()
                 finally:
-                    for t in (up_task, down_task):
-                        if not t.done():
+                    # Cancel all background tasks on session end
+                    for t in (
+                        up_task, down_task,
+                        self._cu_bg_task, self._img_bg_task,
+                        watcher_task, monitor_task,
+                    ):
+                        if t and not t.done():
                             t.cancel()
                             try:
                                 await t
                             except (asyncio.CancelledError, Exception):
                                 pass
-
-                for t in done:
-                    exc = t.exception()
-                    if exc is not None:
-                        raise exc
 
                 # Stream exited cleanly (common for Vertex after turns)
                 self._lrq.close()
@@ -319,6 +432,9 @@ class LiveAgentWorker(QThread):
                 
                 # Reconnect seamlessly without killing the agent thread
                 await asyncio.sleep(0.2)
+                # Reset Events so background tasks can be re-triggered
+                self._cu_trigger  = asyncio.Event()
+                self._img_trigger = asyncio.Event()
                 attempt = 0
                 continue
 
@@ -400,7 +516,7 @@ class LiveAgentWorker(QThread):
                 self._turns_in_current_session += 1
                 self._lrq.send_realtime(
                     types.Blob(mime_type=msg["mime"],
-                               data=base64.b64decode(msg["data"])))
+                                data=base64.b64decode(msg["data"])))
 
     async def _downstream(self, runner: Runner, cfg: RunConfig):
         first_event = True
@@ -493,3 +609,30 @@ class LiveAgentWorker(QThread):
     def _reset_turn(self):
         self._turn_transcript = ""
         self._turn_in_progress = False
+
+    # ── Image completion monitor ───────────────────────────────────────────────
+
+    async def _monitor_image_completion(self):
+        """
+        Lightweight async loop that watches for img_status == 'completed'
+        on the SessionBus and emits the image_ready pyqtSignal.
+
+        Runs inside the agent's asyncio loop. Cancelled automatically when
+        the session ends (via the task cancel in _main).
+        """
+        while True:
+            try:
+                await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                return
+
+            current_status = self._bus.get("img_status", "idle")
+            if current_status == "completed" and self._last_img_status != "completed":
+                path = self._bus.get("img_result", "")
+                if path:
+                    # Emit on Qt thread via signal — safe even from asyncio loop
+                    # because PyQt6 signals are thread-safe at emit time.
+                    self.image_ready.emit(path)
+                    logger.info("[%s] image_ready emitted: %s", self.agent_name, path)
+
+            self._last_img_status = current_status

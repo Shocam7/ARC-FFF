@@ -46,6 +46,7 @@ async def run_computer_use_background(
     bus: SessionBus,
     trigger_ev: asyncio.Event,
     task_ref: list,   # mutable single-element list: task_ref[0] = task string
+    on_event: callable = None,
 ):
     """
     Background coroutine — runs inside Mark's asyncio.gather().
@@ -69,8 +70,12 @@ async def run_computer_use_background(
     bus.write_cu_action(action="Starting computer task…", status="running")
 
     try:
+        if on_event:
+            on_event({"subagent": "computer_use", "status": "running", "summary": f"Task: {task}"})
         # All blocking I/O runs in a thread so Mark's loop stays free ✓
-        result = await asyncio.to_thread(_blocking_cu_call, task, bus)
+        result = await asyncio.to_thread(_blocking_cu_call, task, bus, on_event)
+        if on_event:
+            on_event({"subagent": "computer_use", "status": "completed", "summary": "Task completed", "result": result})
         bus.write_cu_action(
             action="Task completed",
             status="completed",
@@ -80,18 +85,22 @@ async def run_computer_use_background(
 
     except asyncio.CancelledError:
         # task.cancel() was called — shut down cleanly
+        if on_event:
+            on_event({"subagent": "computer_use", "status": "failed", "summary": "Task cancelled"})
         bus.write_cu_action(action="Task cancelled", status="failed")
         logger.info("[ComputerUse] Cancelled during execution")
         raise  # re-raise so asyncio.gather / create_task knows it's done
 
     except Exception as exc:
+        if on_event:
+            on_event({"subagent": "computer_use", "status": "failed", "summary": f"Error: {exc}"})
         bus.write_cu_action(action=f"Error: {exc}", status="failed")
         logger.error("[ComputerUse] Failed: %s", exc)
 
 
 # ── Blocking worker (runs in asyncio.to_thread) ────────────────────────────
 
-def _blocking_cu_call(task: str, bus: SessionBus) -> str:
+def _blocking_cu_call(task: str, bus: SessionBus, on_event: callable = None) -> str:
     """
     Synchronous google.genai call — safe to block here (runs in a thread).
 
@@ -112,15 +121,14 @@ def _blocking_cu_call(task: str, bus: SessionBus) -> str:
         system_instruction=(
             "You are a computer-use agent. Complete the task step by step. "
             "Use computer tools to interact with the screen. "
-            "You can: navigate to URLs; click, type, fill forms; take screenshots; "
-            "print/save/share the page; upload a file (path) or download from a URL; "
-            "open, close, minimize, maximize, or restore desktop applications. "
+            "You can: open, close, minimize, maximize, or restore desktop applications; "
+            "navigate to URLs; click, type, fill forms; take screenshots; "
+            "print/save/share the page; upload a file (path) or download from a URL. "
             "After completing each action, give a brief status check.\n\n"
-            "If the screenshot shows a DIFFERENT application (e.g. ARC, or not the browser or target website): "
-            "first try to switch to the browser (use key/hotkey: Alt+Tab one or more times to bring the browser forward). "
-            "If after trying you still cannot see the right window, respond with a clear message to the user: "
-            "'I need the booking website (or target page) to be visible. Please switch to your browser and bring that tab to the front so I can continue.' "
-            "Never leave the user without an explanation: if you cannot proceed, say so clearly and tell them what to do."
+            "If the task requires a desktop app (like Notepad or Calc), first try to launch it "
+            "using 'open_application'. If the task requires a website, use 'open_web_browser'. "
+            "If the screenshot shows the wrong window, use 'key_combination' with 'alt+tab' "
+            "to switch windows. If you still cannot proceed, tell the user clearly what is missing."
         ),
     )
 
@@ -143,7 +151,7 @@ def _blocking_cu_call(task: str, bus: SessionBus) -> str:
         )
 
         candidate = response.candidates[0] if response.candidates else None
-        if not candidate:
+        if not candidate or not candidate.content:
             break
 
         content = candidate.content
@@ -159,6 +167,8 @@ def _blocking_cu_call(task: str, bus: SessionBus) -> str:
 
                 # Notify bus BEFORE executing (narrate intent)
                 on_before_action(tool_name, tool_args, bus, page_context)
+                if on_event:
+                    on_event({"subagent": "computer_use", "status": "running", "summary": f"Action: {tool_name}", "data": tool_args})
 
                 # If the model sent a safety_decision (e.g. require_confirmation), do not
                 # execute the action; return an acknowledgment so the API accepts the response.
@@ -175,6 +185,9 @@ def _blocking_cu_call(task: str, bus: SessionBus) -> str:
                     if tool_result.get("status") == "error":
                         tool_result = {"status": "error", "output": tool_result.get("error", "Unknown error")}
 
+                if on_event:
+                    on_event({"subagent": "computer_use", "status": "running", "summary": f"Result: {tool_result.get('status', 'unknown')}", "data": tool_result})
+
                 # Take screenshot and attach so the model sees the new state
                 try:
                     screenshot_bytes = take_screenshot()
@@ -186,7 +199,7 @@ def _blocking_cu_call(task: str, bus: SessionBus) -> str:
                     ]
                 except Exception as e:
                     logger.warning("[ComputerUse] Screenshot failed: %s", e)
-                    response_parts = None
+                    response_parts = []
 
                 # Notify bus AFTER executing (update page context if nav)
                 on_after_action(tool_name, tool_args, tool_result, bus, page_context)
