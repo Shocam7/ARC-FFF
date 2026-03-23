@@ -695,7 +695,7 @@ function SettingsPanel({ displayName, setDisplayName, connected, connect, discon
           style={{
             width: "100%", padding: "10px 0", borderRadius: 8, border: "none",
             background: "rgba(234,67,53,0.15)", color: "#f28b82",
-            border: "1px solid rgba(234,67,53,0.3)",
+            outline: "1px solid rgba(234,67,53,0.3)",
             fontSize: 14, fontWeight: 500, cursor: "pointer", fontFamily: "inherit",
           }}
         >
